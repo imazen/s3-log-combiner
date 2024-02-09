@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 /// Concatenates consecutive S3 (typically log) files with high concurrency and resiliency.
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
-struct Args {
+struct FetchArgs {
     /// Specifies the S3 bucket name
     #[arg(long, value_parser)]
     bucket: String,
@@ -32,12 +32,16 @@ struct Args {
     start_after: Option<String>,
 
     /// Specifies the maximum number of concurrent connections
-    #[arg(long, default_value_t = 2000, value_parser)]
+    #[arg(long, default_value_t = 20000, value_parser)]
     max_connections: usize,
 
     /// Specifies the target size of each output file chunk in kilobytes
     #[arg(long, default_value_t = 51200, value_parser)] // Default to 50MB in KB
     target_size_kb: usize,
+
+    /// Retry count per file
+    #[arg(long, default_value_t = 10, value_parser)] // Default to 50MB in KB
+    retry: usize,
 
     /// AWS access key ID
     #[arg(long, env = "AWS_ACCESS_KEY_ID", value_parser)]
@@ -54,10 +58,17 @@ struct Args {
     /// Verbose flag
     #[arg(long, action)]
     verbose: bool,
+
+    #[arg(long, action)]
+    continue_on_fatal_error: bool,
+}
+
+struct ParseArgs {
+    split_by_query_key: String,
 }
 
 pub fn parse_args() -> Config {
-    let Args {
+    let FetchArgs {
         bucket,
         region,
         output_directory,
@@ -68,7 +79,9 @@ pub fn parse_args() -> Config {
         secret_key,
         quiet,
         verbose,
-    } = Args::parse();
+        retry,
+        continue_on_fatal_error,
+    } = FetchArgs::parse();
 
     let dir = output_directory.unwrap_or_else(|| env::current_dir().unwrap().join(&bucket));
 
@@ -85,6 +98,8 @@ pub fn parse_args() -> Config {
         secret_key: secret_key.expect("AWS secret access key not set"),
         quiet,
         verbose,
+        retry,
+        continue_on_fatal_error,
     }
 }
 
@@ -104,16 +119,28 @@ fn last_file_in_directory<P: AsRef<Path>>(directory_path: P) -> Option<String> {
         let mut files: Vec<PathBuf> = read_dir
             .filter_map(|entry| entry.ok()) // Filter out Err results
             .map(|entry| entry.path()) // Get the path of each entry
-            .filter(|path| {
-                path.is_file()
-                    && (path.extension().is_none()
-                        || !path.extension().unwrap().eq(&incomplete)
-                        || !path.extension().unwrap().eq(&error))
-            }) // Keep only files
+            .filter(|path| path.is_file()) // Keep only files
             .collect();
 
         // Sort the files alphabetically
         files.sort_unstable();
+
+        let mut fail = false;
+        for path in files.iter() {
+            if let Some(ref ext) = path.extension() {
+                if ext.eq_ignore_ascii_case(&incomplete) {
+                    eprintln!("Found errored batch {:?}, please clean up the errored and all subsequent files first.", &path);
+                    fail = true;
+                }
+                if ext.eq_ignore_ascii_case(&error) {
+                    eprintln!("Found incomplete batch {:?}, please clean up the incomplete and all subsequent files first.", &path);
+                    fail = true;
+                }
+            }
+        }
+        if fail {
+            std::process::exit(1);
+        }
 
         // Get the last file's name
         if let Some(last_file_path) = files.last() {
@@ -123,5 +150,5 @@ fn last_file_in_directory<P: AsRef<Path>>(directory_path: P) -> Option<String> {
                 .map(|s| s.to_string());
         }
     }
-    Option::None
+    None
 }

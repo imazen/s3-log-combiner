@@ -6,8 +6,9 @@ use rusoto_s3::{GetObjectError, GetObjectRequest, ListObjectsV2Request, S3Client
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, AtomicUsize};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::fs;
 use tokio::fs::File;
 use tokio::io::{AsyncWriteExt, BufWriter};
@@ -15,6 +16,30 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::sleep;
 use tokio_stream::wrappers::ReceiverStream;
+
+static LIST_REQUESTS: AtomicUsize = AtomicUsize::new(0);
+static LIST_REQUEST_EST_BYTES: AtomicUsize = AtomicUsize::new(0);
+static BATCHES_STARTED: AtomicUsize = AtomicUsize::new(0);
+static FETCHES_ENQUEUED: AtomicUsize = AtomicUsize::new(0);
+static FETCHES_DEQUEUED: AtomicUsize = AtomicUsize::new(0);
+
+static BLOB_BYTES_READ: AtomicUsize = AtomicUsize::new(0);
+static BLOB_RESULTS_ENQUEUED: AtomicUsize = AtomicUsize::new(0);
+static BLOB_RESULTS_DEQUEUED: AtomicUsize = AtomicUsize::new(0);
+
+static ORDERED_WRITES_ENQUEUED: AtomicUsize = AtomicUsize::new(0);
+static ORDERED_WRITES_DEQUEUED: AtomicUsize = AtomicUsize::new(0);
+
+static FILES_WRITTEN: AtomicUsize = AtomicUsize::new(0);
+static UNRECOVERABLE_ERRORS: AtomicUsize = AtomicUsize::new(0);
+static BLOB_BYTES_WRITTEN: AtomicUsize = AtomicUsize::new(0);
+
+static LAST_UPDATE_BYTES_READ: AtomicUsize = AtomicUsize::new(0);
+static LAST_UPDATE_EST_LIST_BYTES_READ: AtomicUsize = AtomicUsize::new(0);
+static LAST_UPDATE_BYTES_WRITTEN: AtomicUsize = AtomicUsize::new(0);
+static LAST_UPDATE_PRINTED: AtomicU64 = AtomicU64::new(0);
+
+static UPDATE_FREQUENCY_SECONDS: i32 = 8;
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -28,6 +53,8 @@ pub struct Config {
     pub secret_key: String,
     pub quiet: bool,
     pub verbose: bool,
+    pub retry: usize,
+    pub continue_on_fatal_error: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -54,7 +81,7 @@ struct OrderedBlobResult {
 struct BatchOutputMetadata {
     first_item_index: Option<usize>,
     last_item_index: Option<usize>,
-    final_path: Option<std::path::PathBuf>,
+    final_path: Option<PathBuf>,
     pending: bool,
 }
 
@@ -73,23 +100,29 @@ async fn drain_ready_batches(
     let mut results = data.results.lock().await;
 
     if finished {
-        if let Some((_, last_blob)) = results.iter().next_back() {
-            if !outputs.is_empty() {
-                let last_output = outputs.last_mut().unwrap();
-                if last_output.pending && last_output.last_item_index.is_none() {
-                    if config.verbose {
-                        println!(
-                            "Last batch of blobs needed a last_item_index, using {:?}",
-                            last_blob.entry.index
-                        );
-                    }
-                    last_output.last_item_index = Some(last_blob.entry.index);
+        if !outputs.is_empty() {
+            let last_output = outputs.last_mut().unwrap();
+            if last_output.pending && last_output.last_item_index.is_none() {
+                let mut last_result_index = None;
+                if let Some((_, last_blob)) = results.iter().next_back() {
+                    last_result_index = Some(last_blob.entry.index);
+                } else {
+                    eprintln!("No results exist ")
                 }
+                if config.verbose {
+                    println!(
+                        "Last batch of blobs needed a last_item_index, using {:?}",
+                        last_result_index
+                    );
+                }
+                last_output.last_item_index = last_result_index;
             }
         }
     }
-
+    let mut output_ix = -1;
+    let outputs_count = outputs.len();
     for output in outputs.iter_mut() {
+        output_ix += 1;
         if output.pending {
             if let Some(last_item_index) = output.last_item_index {
                 if output.final_path.is_none() || output.first_item_index.is_none() {
@@ -149,20 +182,27 @@ async fn drain_ready_batches(
                                 eprintln!("Failed to send OrderedBlobResult");
                                 panic!();
                             }
+                            ORDERED_WRITES_ENQUEUED
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         }
                     }
                     output.pending = false; // Mark this batch as not pending anymore
                 } else if finished {
-                    panic!("Not all items completed in the batch")
+                    panic!(
+                        "Not all components finished downloading in batch {:?} of {:?}",
+                        output_ix + 1,
+                        outputs_count
+                    );
                 }
             } else if finished {
-                panic!("Failed to determine a value for last_item_index in batch")
+                eprintln!(
+                    "Failed to determine a value for last_item_index in batch {:?} of {:?}",
+                    output_ix + 1,
+                    outputs_count
+                );
             }
         }
     }
-
-    // Clean up: remove any outputs that are not pending anymore
-    outputs.retain(|output| output.pending);
 }
 impl Default for BatchOutputMetadata {
     fn default() -> Self {
@@ -197,6 +237,7 @@ async fn reorder_logs(
     let rx_stream = ReceiverStream::new(rx);
     rx_stream
         .for_each(|blob| {
+            BLOB_RESULTS_DEQUEUED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let blob_index = blob.entry.index;
             let batch_index = blob.entry.batch_index;
             let first_index_of_batch = blob.entry.first_index_of_batch;
@@ -278,10 +319,12 @@ async fn main() {
         region,
     ));
 
-    // Create channels for each stage of the pipeline
-    let (entry_tx, entry_rx) = mpsc::channel::<BlobEntry>(config.max_connections * 4);
-    let (blob_tx, blob_rx) = mpsc::channel::<BlobResult>(config.max_connections * 4);
-    let (ordered_tx, ordered_rx) = mpsc::channel::<OrderedBlobResult>(config.max_connections * 4);
+    // The channel between listing and fetching
+    let (entry_tx, entry_rx) = mpsc::channel::<BlobEntry>(config.max_connections * 2);
+    // The channel between fetching and ordering
+    let (blob_tx, blob_rx) = mpsc::channel::<BlobResult>(config.target_size_kb);
+    // The channel between ordered results and writing to disk
+    let (ordered_tx, ordered_rx) = mpsc::channel::<OrderedBlobResult>(config.max_connections);
 
     // Launch listing task
     let listing_task = tokio::spawn(list_s3_logs(s3_client.clone(), config.clone(), entry_tx));
@@ -300,11 +343,90 @@ async fn main() {
     // Launch writing task
     let writing_task = tokio::spawn(write_logs(ordered_rx));
 
+    let status_task = tokio::spawn(print_status_update_tokio(config.clone()));
     // Wait for all tasks to complete
-    let (_listing_result, _fetching_result, _reordering_result, _writing_result) =
-        tokio::join!(listing_task, fetching_task, reordering_task, writing_task);
+    let (_listing_result, _fetching_result, _reordering_result, _writing_result, _status_result) = tokio::join!(
+        listing_task,
+        fetching_task,
+        reordering_task,
+        writing_task,
+        status_task
+    );
 }
 
+async fn print_status_update_tokio(config: Config) {
+    if config.quiet {
+        return;
+    }
+    loop {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards")
+            .as_secs();
+        let last_update = LAST_UPDATE_PRINTED.load(std::sync::atomic::Ordering::Relaxed);
+
+        if now - last_update >= UPDATE_FREQUENCY_SECONDS as u64 {
+            let bytes_read_since_last_update = BLOB_BYTES_READ
+                .load(std::sync::atomic::Ordering::Relaxed)
+                - LAST_UPDATE_BYTES_READ.load(std::sync::atomic::Ordering::Relaxed)
+                + LIST_REQUEST_EST_BYTES.load(std::sync::atomic::Ordering::Relaxed)
+                - LAST_UPDATE_EST_LIST_BYTES_READ.load(std::sync::atomic::Ordering::Relaxed);
+            let bytes_written_since_last_update = BLOB_BYTES_WRITTEN
+                .load(std::sync::atomic::Ordering::Relaxed)
+                - LAST_UPDATE_BYTES_WRITTEN.load(std::sync::atomic::Ordering::Relaxed);
+
+            let mbps_read = (bytes_read_since_last_update as f64 / 1_024_000.0)
+                / (UPDATE_FREQUENCY_SECONDS as f64)
+                * 8f64;
+            let mbps_written = (bytes_written_since_last_update as f64 / 1_024_000.0)
+                / (UPDATE_FREQUENCY_SECONDS as f64)
+                * 8f64;
+
+            let fetches_net = FETCHES_ENQUEUED.load(std::sync::atomic::Ordering::Relaxed) as i64
+                - FETCHES_DEQUEUED.load(std::sync::atomic::Ordering::Relaxed) as i64;
+            let blob_results_net = BLOB_RESULTS_ENQUEUED.load(std::sync::atomic::Ordering::Relaxed)
+                as i64
+                - BLOB_RESULTS_DEQUEUED.load(std::sync::atomic::Ordering::Relaxed) as i64;
+
+            let blob_reordering = BLOB_RESULTS_DEQUEUED.load(std::sync::atomic::Ordering::Relaxed)
+                as i64
+                - ORDERED_WRITES_ENQUEUED.load(std::sync::atomic::Ordering::Relaxed) as i64;
+
+            let ordered_writes_net =
+                ORDERED_WRITES_ENQUEUED.load(std::sync::atomic::Ordering::Relaxed) as i64
+                    - ORDERED_WRITES_DEQUEUED.load(std::sync::atomic::Ordering::Relaxed) as i64;
+
+            let total_unrecoverable_errors =
+                UNRECOVERABLE_ERRORS.load(std::sync::atomic::Ordering::Relaxed);
+            let total_gb_read =
+                BLOB_BYTES_READ.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1_024_000_000.0;
+            let total_gb_written = BLOB_BYTES_WRITTEN.load(std::sync::atomic::Ordering::Relaxed)
+                as f64
+                / 1_024_000_000.0;
+            let total_requests = LIST_REQUESTS.load(std::sync::atomic::Ordering::Relaxed)
+                + BLOB_RESULTS_ENQUEUED.load(std::sync::atomic::Ordering::Relaxed);
+
+            println!("{:.2}Mbps down, {:.2}Mbps disk, {} fetches queued, {} results reordering, {} results queued, {} writes queued, {} Fatal errors, {:.2} Gb written, {:.2} Gb fetched, {} HTTP requests.",
+                     mbps_read, mbps_written, fetches_net,blob_reordering, blob_results_net, ordered_writes_net, total_unrecoverable_errors, total_gb_written, total_gb_read, total_requests);
+
+            LAST_UPDATE_BYTES_READ.store(
+                BLOB_BYTES_READ.load(std::sync::atomic::Ordering::Relaxed),
+                std::sync::atomic::Ordering::Relaxed,
+            );
+            LAST_UPDATE_BYTES_WRITTEN.store(
+                BLOB_BYTES_WRITTEN.load(std::sync::atomic::Ordering::Relaxed),
+                std::sync::atomic::Ordering::Relaxed,
+            );
+            LAST_UPDATE_EST_LIST_BYTES_READ.store(
+                LIST_REQUEST_EST_BYTES.load(std::sync::atomic::Ordering::Relaxed),
+                std::sync::atomic::Ordering::Relaxed,
+            );
+            LAST_UPDATE_PRINTED.store(now, std::sync::atomic::Ordering::Relaxed);
+        }
+
+        sleep(Duration::from_secs(UPDATE_FREQUENCY_SECONDS as u64)).await;
+    }
+}
 async fn fetch_logs(
     s3: Arc<S3Client>,
     rx: Receiver<BlobEntry>,
@@ -318,66 +440,79 @@ async fn fetch_logs(
             let tx_clone = tx.clone();
             let config_clone = config.clone();
             async move {
-                let mut attempts = 0;
-                let max_attempts = 5;
-                let mut backoff = Duration::from_millis(200); // Start with 200ms
-
-                loop {
-                    let get_req = GetObjectRequest {
-                        bucket: config_clone.bucket.clone(),
-                        key: entry.name.clone(),
-                        ..Default::default()
-                    };
-
-                    match s3_clone.get_object(get_req).await {
-                        Ok(output) => {
-                            let contents = if let Some(stream) = output.body {
-                                let body = stream.map_ok(|b| b.to_vec()).try_concat().await;
-                                body.ok()
-                            } else {
-                                None
-                            };
-                            let result = BlobResult {
-                                entry: entry.clone(),
-                                contents,
-                                error: None,
-                            };
-                            tx_clone.send(result).await.unwrap(); // Handle send error in real application
-                            break; // Success, exit loop
-                        }
-                        Err(e) => {
-                            attempts += 1;
-                            if attempts >= max_attempts || !is_recoverable(&e) {
-                                eprintln!(
-                                    "ERROR: Unrecoverable blob fetch error for {:?}: {:?}",
-                                    entry.name.clone(),
-                                    e
-                                );
-
-                                let result = BlobResult {
-                                    entry: entry.clone(),
-                                    contents: None,
-                                    error: Some(Box::new(format!("{:?}", e))),
-                                };
-                                tx_clone.send(result).await.unwrap(); // Handle send error in real application
-                                break; // Exit loop after max attempts or non-recoverable error
-                            } else {
-                                if (!config.quiet && attempts > 1) || config.verbose {
-                                    eprintln!(
-                                        "Retrying {:?} in  {:?}",
-                                        entry.name.clone(),
-                                        backoff
-                                    );
-                                }
-                                sleep(backoff).await;
-                                backoff *= 2; // Exponential backoff
-                            }
-                        }
-                    }
-                }
+                tokio::task::spawn(fetch_log(entry, s3_clone, tx_clone, config_clone));
             }
         })
         .await;
+}
+
+async fn fetch_log(
+    entry: BlobEntry,
+    s3_clone: Arc<S3Client>,
+    tx_clone: Sender<BlobResult>,
+    config: Config,
+) {
+    FETCHES_DEQUEUED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+    let mut attempts = 0;
+    let max_attempts = config.retry;
+    let mut backoff = Duration::from_millis(200); // Start with 200ms
+
+    loop {
+        let get_req = GetObjectRequest {
+            bucket: config.bucket.clone(),
+            key: entry.name.clone(),
+            ..Default::default()
+        };
+
+        match s3_clone.get_object(get_req).await {
+            Ok(output) => {
+                let contents = if let Some(stream) = output.body {
+                    let body = stream.map_ok(|b| b.to_vec()).try_concat().await;
+                    body.ok()
+                } else {
+                    None
+                };
+                let byte_count = contents.as_ref().map(|c| c.len()).unwrap_or(0);
+                let result = BlobResult {
+                    entry: entry.clone(),
+                    contents,
+                    error: None,
+                };
+                tx_clone.send(result).await.unwrap(); // Handle send error in real application
+                BLOB_RESULTS_ENQUEUED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                BLOB_BYTES_READ.fetch_add(byte_count, std::sync::atomic::Ordering::Relaxed);
+                break; // Success, exit loop
+            }
+            Err(e) => {
+                attempts += 1;
+                if attempts >= max_attempts || !is_recoverable(&e) {
+                    eprintln!(
+                        "ERROR: Unrecoverable blob fetch error for {:?}: {:?}",
+                        entry.name.clone(),
+                        e
+                    );
+                    UNRECOVERABLE_ERRORS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if !config.continue_on_fatal_error {
+                        std::process::exit(2);
+                    }
+                    let result = BlobResult {
+                        entry: entry.clone(),
+                        contents: None,
+                        error: Some(Box::new(format!("{:?}", e))),
+                    };
+                    tx_clone.send(result).await.unwrap(); // Handle send error in real application
+                    break; // Exit loop after max attempts or non-recoverable error
+                } else {
+                    if (!config.quiet && attempts > 1) || config.verbose {
+                        eprintln!("Retrying {:?} in  {:?}", entry.name.clone(), backoff);
+                    }
+                    sleep(backoff).await;
+                    backoff *= 2; // Exponential backoff
+                }
+            }
+        }
+    }
 }
 
 fn is_recoverable(error: &RusotoError<GetObjectError>) -> bool {
@@ -401,23 +536,40 @@ async fn list_s3_logs(s3: Arc<S3Client>, config: Config, tx: Sender<BlobEntry>) 
     let mut first_index_of_batch = 0;
     let mut total_listed = 0;
     let mut ix = 0;
+    let mut max_keys = 500i64;
+    let max_max_keys = 25000.min((config.max_connections as i64).max(max_keys));
+
     loop {
         let list_req = ListObjectsV2Request {
             bucket: config.bucket.to_string(),
             start_after: config.start_at.clone(),
-            max_keys: Some(config.max_connections as i64),
+            max_keys: Some(max_keys),
             continuation_token: continuation_token.clone(),
             ..Default::default()
         };
-
+        if max_keys < max_max_keys {
+            // approach max_max_keys exponentially
+            // Slow start makes for a fast start.
+            max_keys = (max_keys * 2).min(max_max_keys);
+        }
         match s3.list_objects_v2(list_req).await {
             Ok(output) => {
+                LIST_REQUESTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
                 if let Some(contents) = output.contents {
                     total_listed += contents.len();
+
+                    let mut est_bytes = 0;
                     if config.verbose {
                         println!("Listed {:?} blobs in total", total_listed);
                     }
                     for object in contents {
+                        est_bytes += object.e_tag.map(|t| t.len() + 15).unwrap_or(0)
+                            + object.last_modified.map(|t| t.len() + 30).unwrap_or(0)
+                            + object.storage_class.map(|t| t.len() + 30).unwrap_or(0)
+                            //+ object.owner.map(|t| t.display_name.len() + 15).unwrap_or(0)
+                            + object.size.as_ref().map(|ref t| 30).unwrap_or(0)
+                            + object.key.as_ref().map(|ref t| t.len() + 30).unwrap_or(0);
                         if let Some(key) = object.key {
                             let size = object.size.unwrap_or(0);
 
@@ -428,6 +580,7 @@ async fn list_s3_logs(s3: Arc<S3Client>, config: Config, tx: Sender<BlobEntry>) 
                                 batch_index += 1;
                                 first_index_of_batch = ix;
                                 batch_bytes = 0;
+                                BATCHES_STARTED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             }
                             batch_bytes += size;
                             if let Err(e) = tx
@@ -442,9 +595,12 @@ async fn list_s3_logs(s3: Arc<S3Client>, config: Config, tx: Sender<BlobEntry>) 
                             {
                                 panic!("Error sending key through channel: {:?}", e);
                             }
+                            FETCHES_ENQUEUED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             ix += 1;
                         }
                     }
+                    LIST_REQUEST_EST_BYTES
+                        .fetch_add(est_bytes, std::sync::atomic::Ordering::Relaxed);
                     max_errors += 1; // For each success, increment error tolerance
                 }
                 if let Some(false) = output.is_truncated {
@@ -473,6 +629,7 @@ async fn write_logs(rx: Receiver<OrderedBlobResult>) {
     let mut stream = ReceiverStream::new(rx);
 
     while let Some(result) = stream.next().await {
+        ORDERED_WRITES_DEQUEUED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if let Some(new_file) = &result.open_new_file {
             // Flush and close the current file if it exists
             let has_writer = current_writer.is_some();
@@ -481,6 +638,8 @@ async fn write_logs(rx: Receiver<OrderedBlobResult>) {
                     .flush()
                     .await
                     .expect("Failed to flush and close file");
+
+                FILES_WRITTEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
 
             if has_writer {
@@ -543,6 +702,10 @@ async fn write_logs(rx: Receiver<OrderedBlobResult>) {
                     .write_all(&contents)
                     .await
                     .expect("Failed to write data");
+
+                BLOB_BYTES_WRITTEN.fetch_add(contents.len(), std::sync::atomic::Ordering::Relaxed);
+            } else {
+                panic!();
             }
         }
         if let Some(err) = result.blob.error {
