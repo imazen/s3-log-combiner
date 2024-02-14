@@ -1,3 +1,16 @@
+use crate::cli::QueryParseArgs;
+
+pub async fn parse(config: QueryParseArgs) {
+    let QueryParseArgs {
+        output_directory,
+        input,
+        split_by_key,
+        keep_unique_of_key,
+        filter_operation_type,
+        filter_key_prefix,
+    } = config;
+}
+
 fn parse_s3_log_line(
     line: &str,
     mut process_entry: impl FnMut(&str, &str, &str, &str, &str, &str, &str),

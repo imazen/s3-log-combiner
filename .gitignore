@@ -2,3 +2,5 @@
 /*-logs
 /logs*
 /_logs*
+.env
+imazen.ps1
