@@ -55,6 +55,7 @@ pub struct Config {
     pub verbose: bool,
     pub retry: usize,
     pub continue_on_fatal_error: bool,
+    pub clear_columns: Vec<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -141,7 +142,7 @@ pub async fn fetch(config: Config) {
     let reordering_task = tokio::spawn(reorder_logs(blob_rx, ordered_tx, config.clone()));
 
     // Launch writing task
-    let writing_task = tokio::spawn(write_logs(ordered_rx));
+    let writing_task = tokio::spawn(write_logs(ordered_rx, config.clone()));
 
     let status_task = tokio::spawn(print_status_update_tokio(config.clone()));
     // Wait for all tasks to complete
@@ -333,14 +334,14 @@ async fn reorder_logs(
     drain_ready_batches(true, &out, tx, &config).await;
 }
 
-async fn create_parent_dirs_if_missing(file_path: &Path) -> std::io::Result<()> {
+pub async fn create_parent_dirs_if_missing(file_path: &Path) -> std::io::Result<()> {
     if let Some(parent) = file_path.parent() {
         fs::create_dir_all(parent).await?;
     }
     Ok(())
 }
 
-async fn create_dirs_if_missing(file_path: &Path) {
+pub async fn create_dirs_if_missing(file_path: &Path) {
     if let Err(e) = create_parent_dirs_if_missing(&file_path).await {
         panic!("Failed to create directories: {}", e);
     } else {
@@ -673,7 +674,7 @@ async fn finish_writing(
     }
 }
 
-async fn write_logs(rx: Receiver<OrderedBlobResult>) {
+async fn write_logs(rx: Receiver<OrderedBlobResult>, config: Config) {
     let mut current_writer: Option<BufWriter<File>> = None;
     let mut current_writer_path: Option<PathBuf> = None;
     let mut current_error_path: Option<PathBuf> = None;
@@ -721,15 +722,10 @@ async fn write_logs(rx: Receiver<OrderedBlobResult>) {
         if let Some(mut contents) = result.blob.contents {
             current_blob_count += 1;
             if let Some(writer) = current_writer.as_mut() {
-                if !contents.ends_with(b"\n") {
-                    contents.push(b'\n');
-                }
-                writer
-                    .write_all(&contents)
-                    .await
-                    .expect("Failed to write data");
+                let contents_len = contents.len();
+                write_filtered(writer, contents, &config).await.expect("Failed to write data");
 
-                BLOB_BYTES_WRITTEN.fetch_add(contents.len(), std::sync::atomic::Ordering::Relaxed);
+                BLOB_BYTES_WRITTEN.fetch_add(contents_len, std::sync::atomic::Ordering::Relaxed);
             } else {
                 panic!();
             }
@@ -766,6 +762,28 @@ async fn write_logs(rx: Receiver<OrderedBlobResult>) {
     .await;
     println!("Flushed all files to disk. Complete!");
     JOB_FINISHED.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+async fn write_filtered(writer: &mut BufWriter<File>, mut contents: Vec<u8>, config: &Config)
+    -> std::io::Result<()> {
+    //if config.clear_columns.is_empty(){
+        writer
+            .write_all(&contents)
+            .await?;
+        if !contents.ends_with(b"\n") {
+            writer.write_u8(b'\n').await?;
+        }
+        return Ok(());
+    //}
+    // TODO: implement
+    //let mut buffer = Vec::with_capacity(4096);
+    // loop through contents, one line (\n) at a time
+    // each cell is space delimited
+    // Don't use utf-8, just do bytewise seeking.
+    // config.clear_columns contains Vec<u32> of zero-based columns to replace with "-"
+    // When the entire line has been buffered and all the cleared columns dropped,
+    // call write_all
+
 }
 
 impl PartialEq for BlobResult {
