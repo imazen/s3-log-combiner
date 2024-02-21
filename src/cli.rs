@@ -1,3 +1,4 @@
+use std::env;
 use clap::{Args, Parser, Subcommand};
 use std::ffi::OsString;
 use std::fs::{self, ReadDir};
@@ -13,17 +14,26 @@ pub struct Cli {
 #[derive(Subcommand, Debug)]
 pub enum Commands {
     #[command(arg_required_else_help = true)]
-    Fetch(FetchArgs),
+    Combine(FetchArgs),
     #[command(arg_required_else_help = true)]
-    Parse(QueryParseArgs),
+    Summarize(QueryParseArgs),
 }
 
 /// Concatenates consecutive S3 (typically log) files with high concurrency and resiliency.
-#[derive(Debug, Args)]
+#[derive(Debug, Clone, Args)]
 pub struct FetchArgs {
     /// Specifies the S3 bucket name
     #[arg(long, value_parser)]
-    pub bucket: String,
+    pub from_bucket: String,
+
+    #[arg(long, value_parser)]
+    pub from_prefix: Option<String>,
+
+    #[arg(long, value_parser)]
+    pub to_bucket: Option<String>,
+
+    #[arg(long, value_parser)]
+    pub to_prefix: Option<String>,
 
     /// Specifies the AWS region
     #[arg(
@@ -32,30 +42,46 @@ pub struct FetchArgs {
         value_parser,
         default_value = "us-west-2"
     )]
-    pub region: String,
+    pub from_region: String,
+
+    #[arg(
+    long,
+    env = "AWS_DEFAULT_REGION",
+    value_parser,
+    default_value = "us-west-2"
+    )]
+    pub to_region: String,
 
     /// Specifies the output directory
     #[arg(long, value_parser)]
     pub output_directory: Option<PathBuf>,
 
     /// Specifies the starting point (blob name) for log file fetching
+    /// Doesn't work with express directory buckets
     #[arg(long, value_parser)]
     pub start_after: Option<String>,
+
+    /// If a target bucket is specified, this key (appended to the to-prefix) will be used
+    /// to read and write the last log file fetched and flushed
+    #[arg(long, value_parser, default_value="start_after_bookmark")]
+    pub start_after_bookmark: String,
+
 
     /// Specifies the maximum number of concurrent connections
     #[arg(long, default_value_t = 20000, value_parser)]
     pub max_connections: usize,
 
-    /// Specifies the target size of each output file chunk in kilobytes
+    /// Specifies the target (uncompressed) size of each output file chunk in kilobytes
     #[arg(long, default_value_t = 51200, value_parser)] // Default to 50MB in KB
-    pub target_size_kb: usize,
+    pub max_uncompressed_file_kb: usize,
 
     /// Replaces specified columns (by index) with '-'
     /// Defaults to 0, 5, 11,12,13,14, 18: bucket owner, Request ID, Bytes Sent, Object Size, Total Time, Turn Around Time, Host ID
     #[arg(long, default_values_t = vec![0, 5, 11,12,13,14, 18], value_parser)]
     pub clear_columns: Vec<u32>,
 
-    /// Retry count per file
+
+    /// Retry count per file fetch or push
     #[arg(long, default_value_t = 10, value_parser)] // Default to 50MB in KB
     pub retry: usize,
 
@@ -77,6 +103,20 @@ pub struct FetchArgs {
 
     #[arg(long, action)]
     pub continue_on_fatal_error: bool,
+}
+
+impl FetchArgs{
+    pub fn prepare(mut self) -> FetchArgs{
+        self.clear_columns.sort();
+        if self.to_bucket.is_none() {
+            self.output_directory = Option::from(self.output_directory.unwrap_or_else(|| env::current_dir().unwrap().join(&self.from_bucket)));
+            if self.start_after.is_none(){
+                self.start_after = last_file_in_directory(&self.output_directory.as_ref().unwrap());
+            }
+        }
+        self
+    }
+
 }
 
 #[derive(Args, Debug)]

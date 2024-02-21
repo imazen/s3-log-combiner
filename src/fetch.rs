@@ -14,6 +14,7 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::sleep;
 use tokio_stream::wrappers::ReceiverStream;
+use crate::cli::FetchArgs;
 
 static LIST_REQUESTS: AtomicUsize = AtomicUsize::new(0);
 static LIST_REQUEST_EST_BYTES: AtomicUsize = AtomicUsize::new(0);
@@ -40,23 +41,6 @@ static LAST_UPDATE_PRINTED: AtomicU64 = AtomicU64::new(0);
 static JOB_FINISHED: AtomicBool = AtomicBool::new(false);
 
 static UPDATE_FREQUENCY_SECONDS: i32 = 8;
-
-#[derive(Debug, Clone)]
-pub struct Config {
-    pub bucket: String,
-    pub region: String,
-    pub output_directory: PathBuf,
-    pub start_at: Option<String>,
-    pub max_connections: usize,
-    pub target_size_kb: usize,
-    pub access_key: String,
-    pub secret_key: String,
-    pub quiet: bool,
-    pub verbose: bool,
-    pub retry: usize,
-    pub continue_on_fatal_error: bool,
-    pub clear_columns: Vec<u32>,
-}
 
 #[derive(Debug, Clone)]
 pub struct BlobEntry {
@@ -91,12 +75,12 @@ struct DataCollection {
     results: Arc<Mutex<BTreeMap<usize, BlobResult>>>,
 }
 
-pub async fn fetch(config: Config) {
+pub async fn fetch(config: FetchArgs) {
     // Use the `config` for the rest of your application logic
     if !config.quiet {
         println!(
             "Configuration: {:#?}",
-            Config {
+            FetchArgs {
                 access_key: "[REDACTED]".to_string(),
                 secret_key: "[REDACTED]".to_string(),
                 ..config.clone()
@@ -106,7 +90,7 @@ pub async fn fetch(config: Config) {
 
     // Example of using the config
     let region = config
-        .region
+        .from_region
         .parse::<Region>()
         .expect("Failed to parse AWS region.");
     let s3_client = Arc::new(S3Client::new_with(
@@ -123,7 +107,7 @@ pub async fn fetch(config: Config) {
     // The channel between listing and fetching
     let (entry_tx, entry_rx) = mpsc::channel::<BlobEntry>(config.max_connections * 2);
     // The channel between fetching and ordering
-    let (blob_tx, blob_rx) = mpsc::channel::<BlobResult>(config.target_size_kb);
+    let (blob_tx, blob_rx) = mpsc::channel::<BlobResult>(config.max_uncompressed_file_kb);
     // The channel between ordered results and writing to disk
     let (ordered_tx, ordered_rx) = mpsc::channel::<OrderedBlobResult>(config.max_connections);
 
@@ -155,7 +139,7 @@ async fn drain_ready_batches(
     finished: bool,
     data: &DataCollection,
     tx: Sender<OrderedBlobResult>,
-    config: &Config,
+    config: &FetchArgs,
 ) {
     let mut outputs = data.outputs.lock().await;
     let mut results = data.results.lock().await;
@@ -195,7 +179,7 @@ async fn drain_ready_batches(
 
                         if output.final_path.is_none() {
                             // Construct the final path for the batch
-                            let mut final_path = std::path::PathBuf::from(&config.output_directory);
+                            let mut final_path = std::path::PathBuf::from(&config.output_directory.as_ref().unwrap());
                             final_path.push(last_item.entry.name.to_string());
                             output.final_path = Some(final_path);
                         }
@@ -287,7 +271,7 @@ fn populate<T: Clone>(index: usize, v: &mut Vec<T>, default_value: T) {
 async fn reorder_logs(
     rx: Receiver<BlobResult>,
     tx: Sender<OrderedBlobResult>,
-    config_copy: Config,
+    config_copy: FetchArgs,
 ) {
     let root = DataCollection {
         outputs: Arc::new(Mutex::new(Vec::new())),
@@ -348,7 +332,7 @@ pub async fn create_dirs_if_missing(file_path: &Path) {
     }
 }
 
-async fn print_status_update_tokio(config: Config) {
+async fn print_status_update_tokio(config: FetchArgs) {
     if config.quiet {
         return;
     }
@@ -432,7 +416,7 @@ async fn fetch_logs(
     s3: Arc<S3Client>,
     rx: Receiver<BlobEntry>,
     tx: Sender<BlobResult>,
-    config: Config,
+    config: FetchArgs,
 ) {
     let rx_stream = ReceiverStream::new(rx);
     rx_stream
@@ -452,7 +436,7 @@ async fn fetch_log(
     entry: BlobEntry,
     s3_clone: Arc<S3Client>,
     tx_clone: Sender<BlobResult>,
-    config: Config,
+    config: FetchArgs,
 ) {
     FETCHES_DEQUEUED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
@@ -462,7 +446,7 @@ async fn fetch_log(
 
     loop {
         let get_req = GetObjectRequest {
-            bucket: config.bucket.clone(),
+            bucket: config.from_bucket.clone(),
             key: entry.name.clone(),
             ..Default::default()
         };
@@ -530,7 +514,7 @@ fn is_recoverable(error: &RusotoError<GetObjectError>) -> bool {
     // specific error variants or conditions you want to handle.
 }
 
-async fn list_s3_logs(s3: Arc<S3Client>, config: Config, tx: Sender<BlobEntry>) {
+async fn list_s3_logs(s3: Arc<S3Client>, config: FetchArgs, tx: Sender<BlobEntry>) {
     let mut continuation_token = None;
     let mut max_errors = 5;
     let mut batch_bytes = 0;
@@ -540,7 +524,7 @@ async fn list_s3_logs(s3: Arc<S3Client>, config: Config, tx: Sender<BlobEntry>) 
     let mut ix = 0;
     let mut max_keys = 500i64;
     let max_max_keys = 99000
-        .min(config.target_size_kb as i64 * 2)
+        .min(config.max_uncompressed_file_kb as i64 * 2)
         .min((config.max_connections as i64 * 10).max(max_keys));
     if !config.quiet {
         println!(
@@ -551,8 +535,8 @@ async fn list_s3_logs(s3: Arc<S3Client>, config: Config, tx: Sender<BlobEntry>) 
 
     loop {
         let list_req = ListObjectsV2Request {
-            bucket: config.bucket.to_string(),
-            start_after: config.start_at.clone(),
+            bucket: config.from_bucket.to_string(),
+            start_after: config.start_after.clone(),
             max_keys: Some(max_keys),
             continuation_token: continuation_token.clone(),
             ..Default::default()
@@ -584,7 +568,7 @@ async fn list_s3_logs(s3: Arc<S3Client>, config: Config, tx: Sender<BlobEntry>) 
                             let size = object.size.unwrap_or(0);
 
                             if batch_bytes > 0
-                                && batch_bytes + size > (config.target_size_kb * 1000) as i64
+                                && batch_bytes + size > (config.max_uncompressed_file_kb * 1000) as i64
                             {
                                 // Too big, time to split
                                 batch_index += 1;
@@ -674,7 +658,7 @@ async fn finish_writing(
     }
 }
 
-async fn write_logs(rx: Receiver<OrderedBlobResult>, config: Config) {
+async fn write_logs(rx: Receiver<OrderedBlobResult>, config: FetchArgs) {
     let mut current_writer: Option<BufWriter<File>> = None;
     let mut current_writer_path: Option<PathBuf> = None;
     let mut current_error_path: Option<PathBuf> = None;
@@ -719,7 +703,7 @@ async fn write_logs(rx: Receiver<OrderedBlobResult>, config: Config) {
         }
 
         // Write contents to the current file
-        if let Some(mut contents) = result.blob.contents {
+        if let Some(contents) = result.blob.contents {
             current_blob_count += 1;
             if let Some(writer) = current_writer.as_mut() {
                 let contents_len = contents.len();
@@ -764,7 +748,7 @@ async fn write_logs(rx: Receiver<OrderedBlobResult>, config: Config) {
     JOB_FINISHED.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
-async fn write_filtered(writer: &mut BufWriter<File>, mut contents: Vec<u8>, config: &Config)
+async fn write_filtered(writer: &mut BufWriter<File>, contents: Vec<u8>, config: &FetchArgs)
     -> std::io::Result<()> {
     //if config.clear_columns.is_empty(){
         writer
