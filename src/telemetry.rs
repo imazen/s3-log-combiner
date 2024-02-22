@@ -1,4 +1,8 @@
+// This is specific to Imazen's telemetry system,
+// Which uses S3 blob reads and their associated querystring
+
 use chrono::{DateTime, TimeZone, Utc};
+
 
 //&decoded_pixels_total=0
 //&decoded_pixels_per_second_max=0&decoded_pixels_per_minute_max=0

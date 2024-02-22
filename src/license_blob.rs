@@ -125,15 +125,3 @@ impl From<&str> for KnownField {
         }
     }
 }
-
-
-
-//
-// fn main() {
-//     let input = "summary:base64_encoded_text:signature"; // Example input
-//     match parse_file(input) {
-//         Ok(parsed) => println!("Parsed content: {:?}", parsed),
-//         Err(e) => println!("Error: {}", e),
-//     }
-// }
-//

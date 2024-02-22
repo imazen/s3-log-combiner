@@ -56,30 +56,52 @@ pub struct FetchArgs {
     #[arg(long, value_parser)]
     pub output_directory: Option<PathBuf>,
 
-    /// Specifies the starting point (blob name) for log file fetching
+    /// Specifies the starting point (blob name) for log file fetching.
+    /// Only blobs after the given key will be fetched
     /// Doesn't work with express directory buckets
     #[arg(long, value_parser)]
-    pub start_after: Option<String>,
+    pub resume_location: Option<String>,
 
     /// If a target bucket is specified, this key (appended to the to-prefix) will be used
     /// to read and write the last log file fetched and flushed
     #[arg(long, value_parser, default_value="start_after_bookmark")]
-    pub start_after_bookmark: String,
+    pub track_resume_location_in_key: String,
 
+    /// After successfully uploading a processed batch of logs,
+    /// the originals will be deleted if all of their entries
+    /// Are older that the given number of minutes.
+    /// Additionally, the very last log file of a batch won't be deleted, since it's used
+    /// as a bookmark.
+    #[arg(long, default_value_t = 20000, value_parser)]
+    pub delete_after_uploading_if_aged_minutes: Option<usize>,
 
     /// Specifies the maximum number of concurrent connections
     #[arg(long, default_value_t = 20000, value_parser)]
-    pub max_connections: usize,
+    pub max_fetch_connections: usize,
 
-    /// Specifies the target (uncompressed) size of each output file chunk in kilobytes
+    /// Specifies how many kilobytes of data to ingest and process at a time.
+    /// Memory usage is usually a multiple of this.
     #[arg(long, default_value_t = 51200, value_parser)] // Default to 50MB in KB
-    pub max_uncompressed_file_kb: usize,
+    pub fetch_batch_size_kb: usize,
 
     /// Replaces specified columns (by index) with '-'
     /// Defaults to 0, 5, 11,12,13,14, 18: bucket owner, Request ID, Bytes Sent, Object Size, Total Time, Turn Around Time, Host ID
     #[arg(long, default_values_t = vec![0, 5, 11,12,13,14, 18], value_parser)]
     pub clear_columns: Vec<u32>,
 
+    /// When specified, only the listed columns will be retained, all others will be replaced with -
+    /// Inverse of clear_columns
+    #[arg(long, value_parser)]
+    pub preserve_columns: Option<Vec<u32>>,
+
+    /// When specified, columns will be deleted rather than replaced with '-'
+    /// This changes the file format
+    #[arg(long, action)]
+    pub drop_cleared_columns: bool,
+
+    // Uploaded blobs will be compressed
+    #[arg(long, action)]
+    pub compress: bool,
 
     /// Retry count per file fetch or push
     #[arg(long, default_value_t = 10, value_parser)] // Default to 50MB in KB
@@ -103,6 +125,9 @@ pub struct FetchArgs {
 
     #[arg(long, action)]
     pub continue_on_fatal_error: bool,
+
+    #[arg(long, action)]
+    pub imazen_telemetry_processing: bool,
 }
 
 impl FetchArgs{
@@ -110,8 +135,8 @@ impl FetchArgs{
         self.clear_columns.sort();
         if self.to_bucket.is_none() {
             self.output_directory = Option::from(self.output_directory.unwrap_or_else(|| env::current_dir().unwrap().join(&self.from_bucket)));
-            if self.start_after.is_none(){
-                self.start_after = last_file_in_directory(&self.output_directory.as_ref().unwrap());
+            if self.resume_location.is_none(){
+                self.resume_location = last_file_in_directory(&self.output_directory.as_ref().unwrap());
             }
         }
         self

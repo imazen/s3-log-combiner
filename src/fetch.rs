@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use futures_util::stream::FuturesUnordered;
 use tokio::fs;
 use tokio::fs::File;
 use tokio::io::{AsyncWriteExt, BufWriter};
@@ -15,32 +16,8 @@ use tokio::sync::{mpsc, Mutex};
 use tokio::time::sleep;
 use tokio_stream::wrappers::ReceiverStream;
 use crate::cli::FetchArgs;
+use crate::progress::*;
 
-static LIST_REQUESTS: AtomicUsize = AtomicUsize::new(0);
-static LIST_REQUEST_EST_BYTES: AtomicUsize = AtomicUsize::new(0);
-static BATCHES_STARTED: AtomicUsize = AtomicUsize::new(0);
-static FETCHES_ENQUEUED: AtomicUsize = AtomicUsize::new(0);
-static FETCHES_DEQUEUED: AtomicUsize = AtomicUsize::new(0);
-
-static BLOB_BYTES_READ: AtomicUsize = AtomicUsize::new(0);
-static BLOB_RESULTS_ENQUEUED: AtomicUsize = AtomicUsize::new(0);
-static BLOB_RESULTS_DEQUEUED: AtomicUsize = AtomicUsize::new(0);
-
-static ORDERED_WRITES_ENQUEUED: AtomicUsize = AtomicUsize::new(0);
-static ORDERED_WRITES_DEQUEUED: AtomicUsize = AtomicUsize::new(0);
-
-static FILES_WRITTEN: AtomicUsize = AtomicUsize::new(0);
-static UNRECOVERABLE_ERRORS: AtomicUsize = AtomicUsize::new(0);
-static BLOB_BYTES_WRITTEN: AtomicUsize = AtomicUsize::new(0);
-
-static LAST_UPDATE_BYTES_READ: AtomicUsize = AtomicUsize::new(0);
-static LAST_UPDATE_EST_LIST_BYTES_READ: AtomicUsize = AtomicUsize::new(0);
-static LAST_UPDATE_BYTES_WRITTEN: AtomicUsize = AtomicUsize::new(0);
-static LAST_UPDATE_PRINTED: AtomicU64 = AtomicU64::new(0);
-
-static JOB_FINISHED: AtomicBool = AtomicBool::new(false);
-
-static UPDATE_FREQUENCY_SECONDS: i32 = 8;
 
 #[derive(Debug, Clone)]
 pub struct BlobEntry {
@@ -51,28 +28,40 @@ pub struct BlobEntry {
     pub first_index_of_batch: usize,
 }
 #[derive(Debug, Clone)]
-struct BlobResult {
+pub struct BlobResult {
     entry: BlobEntry,
     contents: Option<Vec<u8>>,
     error: Option<Box<String>>,
 }
 
 #[derive(Debug, Clone)]
-struct OrderedBlobResult {
-    blob: BlobResult,
-    open_new_file: Option<PathBuf>,
-}
-#[derive(Debug, Clone)]
 struct BatchOutputMetadata {
     first_item_index: Option<usize>,
     last_item_index: Option<usize>,
-    final_path: Option<PathBuf>,
+    last_key_ingested: Option<String>,
     pending: bool,
 }
 
 struct DataCollection {
     outputs: Arc<Mutex<Vec<BatchOutputMetadata>>>,
     results: Arc<Mutex<BTreeMap<usize, BlobResult>>>,
+}
+fn create_s3_client(config: &FetchArgs, region: &str) -> Arc<S3Client>{
+    let region = config
+        .from_region
+        .parse::<Region>()
+        .expect(&format!("Failed to parse AWS region '{region}"));
+
+    Arc::new(S3Client::new_with(
+        HttpClient::new().expect("Failed to create HTTP client"),
+        rusoto_core::credential::StaticProvider::new(
+            config.access_key.to_string(),
+            config.secret_key.to_string(),
+            None,
+            None,
+        ),
+        region,
+    ))
 }
 
 pub async fn fetch(config: FetchArgs) {
@@ -88,57 +77,47 @@ pub async fn fetch(config: FetchArgs) {
         ); // Placeholder for demonstration
     }
 
-    // Example of using the config
-    let region = config
-        .from_region
-        .parse::<Region>()
-        .expect("Failed to parse AWS region.");
-    let s3_client = Arc::new(S3Client::new_with(
-        HttpClient::new().expect("Failed to create HTTP client"),
-        rusoto_core::credential::StaticProvider::new(
-            config.access_key.to_string(),
-            config.secret_key.to_string(),
-            None,
-            None,
-        ),
-        region,
-    ));
-
+    let from_s3_client = create_s3_client(&config, &config
+        .from_region);
+    let to_s3_client = create_s3_client(&config, &config
+        .to_region);
     // The channel between listing and fetching
-    let (entry_tx, entry_rx) = mpsc::channel::<BlobEntry>(config.max_connections * 2);
+    let (entry_tx, entry_rx) = mpsc::channel::<BlobEntry>(config.max_fetch_connections * 2);
     // The channel between fetching and ordering
-    let (blob_tx, blob_rx) = mpsc::channel::<BlobResult>(config.max_uncompressed_file_kb);
-    // The channel between ordered results and writing to disk
-    let (ordered_tx, ordered_rx) = mpsc::channel::<OrderedBlobResult>(config.max_connections);
+    let (blob_tx, blob_rx) = mpsc::channel::<BlobResult>(config.fetch_batch_size_kb);
+
+
+    // The channel between ordered results and writing to disk. This (pointlessly)
+    // keeps write components as separate messages. They're already in ram tho.
+    // Maybe we create upload/write jobs, and make it generic.
+    // However, we would want special handling for checkpointing.
 
     // Launch listing task
-    let listing_task = tokio::spawn(list_s3_logs(s3_client.clone(), config.clone(), entry_tx));
+    let listing_task = tokio::spawn(list_s3_logs(from_s3_client.clone(), config.clone(), entry_tx));
 
     // Launch fetching task
     let fetching_task = tokio::spawn(fetch_logs(
-        s3_client.clone(),
+        from_s3_client.clone(),
         entry_rx,
         blob_tx,
         config.clone(),
     ));
 
     // Launch reordering task
-    let reordering_task = tokio::spawn(reorder_logs(blob_rx, ordered_tx, config.clone()));
+    let main_task = tokio::spawn(main_processing(blob_rx, config.clone()));
 
-    // Launch writing task
-    let writing_task = tokio::spawn(write_logs(ordered_rx, config.clone()));
-
-    let status_task = tokio::spawn(print_status_update_tokio(config.clone()));
+    let status_task = tokio::spawn(crate::progress::print_status_update_tokio(config.clone()));
     // Wait for all tasks to complete
-    let (_listing_result, _fetching_result, _reordering_result, _writing_result) =
-        tokio::join!(listing_task, fetching_task, reordering_task, writing_task);
+    let (_listing_result, _fetching_result, _reordering_resul) =
+        tokio::join!(listing_task, fetching_task, main_task);
     status_task.abort();
 }
+
+
 
 async fn drain_ready_batches(
     finished: bool,
     data: &DataCollection,
-    tx: Sender<OrderedBlobResult>,
     config: &FetchArgs,
 ) {
     let mut outputs = data.outputs.lock().await;
@@ -170,18 +149,18 @@ async fn drain_ready_batches(
         output_ix += 1;
         if output.pending {
             if let Some(last_item_index) = output.last_item_index {
-                if output.final_path.is_none() || output.first_item_index.is_none() {
+                if output.last_key_ingested.is_none() || output.first_item_index.is_none() {
                     if results.contains_key(&last_item_index) {
                         let last_item = results.get(&last_item_index).unwrap();
                         if output.first_item_index.is_none() {
                             output.first_item_index = Some(last_item.entry.first_index_of_batch)
                         }
 
-                        if output.final_path.is_none() {
+                        if output.last_key_ingested.is_none() {
                             // Construct the final path for the batch
-                            let mut final_path = std::path::PathBuf::from(&config.output_directory.as_ref().unwrap());
-                            final_path.push(last_item.entry.name.to_string());
-                            output.final_path = Some(final_path);
+                            // let mut final_path = std::path::PathBuf::from(&config.output_directory.as_ref().unwrap());
+                            // final_path.push(last_item.entry.name.to_string());
+                            output.last_key_ingested = Some(last_item.entry.name.to_string());
                         }
                     } else if finished {
                         panic!("Cannot complete this batch");
@@ -211,26 +190,14 @@ async fn drain_ready_batches(
                             batch_size
                         );
                     }
+                    let mut batch = Vec::with_capacity(last_item_index - first_item_index + 1);
                     // All items are ready, send OrderedBlobResult for each
                     for i in first_item_index..=last_item_index {
-                        if let Some(blob_result) = results.remove(&i) {
-                            let open_new_file = if i == first_item_index {
-                                output.final_path.clone()
-                            } else {
-                                None
-                            };
-                            let ordered_result = OrderedBlobResult {
-                                blob: blob_result,
-                                open_new_file,
-                            };
-                            if tx.send(ordered_result).await.is_err() {
-                                eprintln!("Failed to send OrderedBlobResult");
-                                panic!();
-                            }
-                            ORDERED_WRITES_ENQUEUED
-                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        }
+                        batch.push(results.remove(&i).unwrap());
                     }
+
+                    crate::process::process_batch(batch, output.last_key_ingested.clone().unwrap(), &config).await;
+
                     output.pending = false; // Mark this batch as not pending anymore
                 } else if finished {
                     panic!(
@@ -254,7 +221,7 @@ impl Default for BatchOutputMetadata {
         BatchOutputMetadata {
             first_item_index: None, // No items initially
             last_item_index: None,  // No items initially
-            final_path: None,       // No path initially
+            last_key_ingested: None,       // No path initially
             pending: true,          // Assuming new batches are pending by default
         }
     }
@@ -268,11 +235,11 @@ fn populate<T: Clone>(index: usize, v: &mut Vec<T>, default_value: T) {
         v.resize(target_len, default_value);
     }
 }
-async fn reorder_logs(
+async fn main_processing(
     rx: Receiver<BlobResult>,
-    tx: Sender<OrderedBlobResult>,
     config_copy: FetchArgs,
 ) {
+    let mut tasks = FuturesUnordered::new();
     let root = DataCollection {
         outputs: Arc::new(Mutex::new(Vec::new())),
         results: Arc::new(Mutex::new(BTreeMap::new())),
@@ -286,7 +253,6 @@ async fn reorder_logs(
             let blob_index = blob.entry.index;
             let batch_index = blob.entry.batch_index;
             let first_index_of_batch = blob.entry.first_index_of_batch;
-            let tx_clone = tx.clone();
             //print!("~");
             async move {
                 if blob_index == first_index_of_batch {
@@ -307,7 +273,7 @@ async fn reorder_logs(
                     }
                 }
                 if blob_index > 0 && blob_index == first_index_of_batch || blob_index % 1000 == 0 {
-                    drain_ready_batches(false, &out, tx_clone.clone(), &config).await;
+                    drain_ready_batches(false, &out, &config).await;
                 }
             }
         })
@@ -315,7 +281,7 @@ async fn reorder_logs(
     if !config.quiet {
         println!("Emptied unordered results stream");
     }
-    drain_ready_batches(true, &out, tx, &config).await;
+    drain_ready_batches(true, &out, &config).await;
 }
 
 pub async fn create_parent_dirs_if_missing(file_path: &Path) -> std::io::Result<()> {
@@ -332,86 +298,7 @@ pub async fn create_dirs_if_missing(file_path: &Path) {
     }
 }
 
-async fn print_status_update_tokio(config: FetchArgs) {
-    if config.quiet {
-        return;
-    }
-    loop {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards")
-            .as_secs();
-        let last_update = LAST_UPDATE_PRINTED.load(std::sync::atomic::Ordering::Relaxed);
 
-        if now - last_update >= UPDATE_FREQUENCY_SECONDS as u64 {
-            if last_update != 0 {
-                let bytes_read_since_last_update = BLOB_BYTES_READ
-                    .load(std::sync::atomic::Ordering::Relaxed)
-                    - LAST_UPDATE_BYTES_READ.load(std::sync::atomic::Ordering::Relaxed)
-                    + LIST_REQUEST_EST_BYTES.load(std::sync::atomic::Ordering::Relaxed)
-                    - LAST_UPDATE_EST_LIST_BYTES_READ.load(std::sync::atomic::Ordering::Relaxed);
-                let bytes_written_since_last_update = BLOB_BYTES_WRITTEN
-                    .load(std::sync::atomic::Ordering::Relaxed)
-                    - LAST_UPDATE_BYTES_WRITTEN.load(std::sync::atomic::Ordering::Relaxed);
-
-                let mbps_read = (bytes_read_since_last_update as f64 / 1_024_000.0)
-                    / (UPDATE_FREQUENCY_SECONDS as f64)
-                    * 8f64;
-                let mbps_written = (bytes_written_since_last_update as f64 / 1_024_000.0)
-                    / (UPDATE_FREQUENCY_SECONDS as f64)
-                    * 8f64;
-
-                let fetches_net = FETCHES_ENQUEUED.load(std::sync::atomic::Ordering::Relaxed)
-                    as i64
-                    - FETCHES_DEQUEUED.load(std::sync::atomic::Ordering::Relaxed) as i64;
-                let blob_results_net =
-                    BLOB_RESULTS_ENQUEUED.load(std::sync::atomic::Ordering::Relaxed) as i64
-                        - BLOB_RESULTS_DEQUEUED.load(std::sync::atomic::Ordering::Relaxed) as i64;
-
-                let blob_reordering =
-                    BLOB_RESULTS_DEQUEUED.load(std::sync::atomic::Ordering::Relaxed) as i64
-                        - ORDERED_WRITES_ENQUEUED.load(std::sync::atomic::Ordering::Relaxed) as i64;
-
-                let ordered_writes_net =
-                    ORDERED_WRITES_ENQUEUED.load(std::sync::atomic::Ordering::Relaxed) as i64
-                        - ORDERED_WRITES_DEQUEUED.load(std::sync::atomic::Ordering::Relaxed) as i64;
-
-                let avg_blobs_per_list = FETCHES_ENQUEUED
-                    .load(std::sync::atomic::Ordering::Relaxed)
-                    / (LIST_REQUESTS.load(std::sync::atomic::Ordering::Relaxed) + 1);
-
-                let total_unrecoverable_errors =
-                    UNRECOVERABLE_ERRORS.load(std::sync::atomic::Ordering::Relaxed);
-                let total_gb_read = BLOB_BYTES_READ.load(std::sync::atomic::Ordering::Relaxed)
-                    as f64
-                    / 1_024_000_000.0;
-                let total_gb_written = BLOB_BYTES_WRITTEN.load(std::sync::atomic::Ordering::Relaxed)
-                    as f64
-                    / 1_024_000_000.0;
-                let total_requests = LIST_REQUESTS.load(std::sync::atomic::Ordering::Relaxed)
-                    + BLOB_RESULTS_ENQUEUED.load(std::sync::atomic::Ordering::Relaxed);
-
-                println!("{:.2}Mbps down, {:.2}Mbps disk, {} fetches queued, {} results reordering, {} results queued, {} writes queued, {} fatal errors, {:.2} Gb written, {:.2} Gb fetched, {} HTTP requests, {} avg blobs/listing",
-                             mbps_read, mbps_written, fetches_net, blob_reordering, blob_results_net, ordered_writes_net, total_unrecoverable_errors, total_gb_written, total_gb_read, total_requests, avg_blobs_per_list);
-            }
-            LAST_UPDATE_BYTES_READ.store(
-                BLOB_BYTES_READ.load(std::sync::atomic::Ordering::Relaxed),
-                std::sync::atomic::Ordering::Relaxed,
-            );
-            LAST_UPDATE_BYTES_WRITTEN.store(
-                BLOB_BYTES_WRITTEN.load(std::sync::atomic::Ordering::Relaxed),
-                std::sync::atomic::Ordering::Relaxed,
-            );
-            LAST_UPDATE_EST_LIST_BYTES_READ.store(
-                LIST_REQUEST_EST_BYTES.load(std::sync::atomic::Ordering::Relaxed),
-                std::sync::atomic::Ordering::Relaxed,
-            );
-            LAST_UPDATE_PRINTED.store(now, std::sync::atomic::Ordering::Relaxed);
-        }
-
-        sleep(Duration::from_secs(UPDATE_FREQUENCY_SECONDS as u64)).await;
-    }
-}
 async fn fetch_logs(
     s3: Arc<S3Client>,
     rx: Receiver<BlobEntry>,
@@ -420,7 +307,7 @@ async fn fetch_logs(
 ) {
     let rx_stream = ReceiverStream::new(rx);
     rx_stream
-        .for_each_concurrent(config.max_connections, |entry| {
+        .for_each_concurrent(config.max_fetch_connections, |entry| {
             let s3_clone = s3.clone();
             let tx_clone = tx.clone();
             let config_clone = config.clone();
@@ -524,8 +411,8 @@ async fn list_s3_logs(s3: Arc<S3Client>, config: FetchArgs, tx: Sender<BlobEntry
     let mut ix = 0;
     let mut max_keys = 500i64;
     let max_max_keys = 99000
-        .min(config.max_uncompressed_file_kb as i64 * 2)
-        .min((config.max_connections as i64 * 10).max(max_keys));
+        .min(config.fetch_batch_size_kb as i64 * 2)
+        .min((config.max_fetch_connections as i64 * 10).max(max_keys));
     if !config.quiet {
         println!(
             "Requesting between {} and {} objects per ListObjectsV2 request.",
@@ -536,7 +423,7 @@ async fn list_s3_logs(s3: Arc<S3Client>, config: FetchArgs, tx: Sender<BlobEntry
     loop {
         let list_req = ListObjectsV2Request {
             bucket: config.from_bucket.to_string(),
-            start_after: config.start_after.clone(),
+            start_after: config.resume_location.clone(),
             max_keys: Some(max_keys),
             continuation_token: continuation_token.clone(),
             ..Default::default()
@@ -568,7 +455,7 @@ async fn list_s3_logs(s3: Arc<S3Client>, config: FetchArgs, tx: Sender<BlobEntry
                             let size = object.size.unwrap_or(0);
 
                             if batch_bytes > 0
-                                && batch_bytes + size > (config.max_uncompressed_file_kb * 1000) as i64
+                                && batch_bytes + size > (config.fetch_batch_size_kb * 1000) as i64
                             {
                                 // Too big, time to split
                                 batch_index += 1;
@@ -613,162 +500,6 @@ async fn list_s3_logs(s3: Arc<S3Client>, config: FetchArgs, tx: Sender<BlobEntry
     }
 }
 
-async fn finish_writing(
-    current_writer: Option<&mut BufWriter<File>>,
-    current_error_writer: Option<&mut BufWriter<File>>,
-    current_writer_path: Option<&PathBuf>,
-    current_error_path: Option<&PathBuf>,
-    current_blob_count: i32,
-) {
-    // Flush and close the current file if it exists
-    let has_writer = current_writer.is_some();
-    if let Some(writer) = current_writer {
-        writer
-            .flush()
-            .await
-            .expect("Failed to flush and close file");
-
-        FILES_WRITTEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    if has_writer {
-        if let Some(current_path) = current_writer_path {
-            if current_error_writer.is_none() {
-                // rename.
-                let mut final_name = current_path.clone();
-                final_name.set_extension("");
-                tokio::fs::rename(current_path, &final_name).await.unwrap();
-                println!(
-                    "Combined {:?} blobs into {:?}",
-                    current_blob_count,
-                    &final_name.file_name().unwrap()
-                );
-            }
-        }
-    }
-    if let Some(writer) = current_error_writer {
-        writer
-            .flush()
-            .await
-            .expect("Failed to flush and close error file");
-        eprintln!(
-            "See unrecoverable errors in {:?}",
-            current_error_path.unwrap()
-        )
-    }
-}
-
-async fn write_logs(rx: Receiver<OrderedBlobResult>, config: FetchArgs) {
-    let mut current_writer: Option<BufWriter<File>> = None;
-    let mut current_writer_path: Option<PathBuf> = None;
-    let mut current_error_path: Option<PathBuf> = None;
-    let mut current_blob_count = 0;
-    let mut current_error_writer: Option<BufWriter<File>> = None;
-
-    let mut stream = ReceiverStream::new(rx);
-
-    while let Some(result) = stream.next().await {
-        ORDERED_WRITES_DEQUEUED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        if let Some(new_file) = &result.open_new_file {
-            finish_writing(
-                current_writer.as_mut(),
-                current_error_writer.as_mut(),
-                current_writer_path.as_ref(),
-                current_error_path.as_ref(),
-                current_blob_count,
-            )
-            .await;
-            let mut writer_path = new_file.clone();
-            writer_path.set_extension("incomplete");
-            current_writer_path = Some(writer_path.clone());
-            let mut err_path = new_file.clone();
-            err_path.set_extension("err");
-            current_error_path = Some(err_path.clone());
-            current_blob_count = 0;
-            // Create new file.
-            create_dirs_if_missing(&writer_path).await;
-
-            // delete .incomplete and .err if they exist
-            let err_exists = tokio::fs::try_exists(&err_path).await;
-            if let Ok(true) = err_exists {
-                let _ = tokio::fs::remove_file(&err_path).await;
-            }
-
-            // Will overwrite anyway
-            let file = File::create(&writer_path)
-                .await
-                .expect("Failed to create file");
-            current_writer = Some(BufWriter::new(file));
-            current_error_writer = None;
-        }
-
-        // Write contents to the current file
-        if let Some(contents) = result.blob.contents {
-            current_blob_count += 1;
-            if let Some(writer) = current_writer.as_mut() {
-                let contents_len = contents.len();
-                write_filtered(writer, contents, &config).await.expect("Failed to write data");
-
-                BLOB_BYTES_WRITTEN.fetch_add(contents_len, std::sync::atomic::Ordering::Relaxed);
-            } else {
-                panic!();
-            }
-        }
-        if let Some(err) = result.blob.error {
-            if current_error_writer.is_none() {
-                let file = File::create(current_error_path.as_ref().unwrap())
-                    .await
-                    .expect("Failed to create error file");
-                current_error_writer = Some(BufWriter::new(file));
-            }
-            if let Some(w) = current_error_writer.as_mut() {
-                w.write(
-                    format!(
-                        "Failed to fetch {:?} - error: {:?}\n",
-                        result.blob.entry.name, err
-                    )
-                    .as_bytes(),
-                )
-                .await
-                .expect("TODO: panic message");
-            }
-        }
-    }
-
-    // Flush and close the last file if it exists
-    finish_writing(
-        current_writer.as_mut(),
-        current_error_writer.as_mut(),
-        current_writer_path.as_ref(),
-        current_error_path.as_ref(),
-        current_blob_count,
-    )
-    .await;
-    println!("Flushed all files to disk. Complete!");
-    JOB_FINISHED.store(true, std::sync::atomic::Ordering::Relaxed);
-}
-
-async fn write_filtered(writer: &mut BufWriter<File>, contents: Vec<u8>, config: &FetchArgs)
-    -> std::io::Result<()> {
-    //if config.clear_columns.is_empty(){
-        writer
-            .write_all(&contents)
-            .await?;
-        if !contents.ends_with(b"\n") {
-            writer.write_u8(b'\n').await?;
-        }
-        return Ok(());
-    //}
-    // TODO: implement
-    //let mut buffer = Vec::with_capacity(4096);
-    // loop through contents, one line (\n) at a time
-    // each cell is space delimited
-    // Don't use utf-8, just do bytewise seeking.
-    // config.clear_columns contains Vec<u32> of zero-based columns to replace with "-"
-    // When the entire line has been buffered and all the cleared columns dropped,
-    // call write_all
-
-}
 
 impl PartialEq for BlobResult {
     fn eq(&self, other: &Self) -> bool {

@@ -6,6 +6,9 @@ mod fetch;
 mod parsing;
 mod telemetry;
 mod license_blob;
+mod fetcher;
+mod process;
+mod progress;
 
 #[tokio::main]
 async fn main() {
