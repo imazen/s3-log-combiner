@@ -28,7 +28,7 @@ impl LicenseStatus {
             LicenseStatus::ActiveWithFeatures(_) => "active",
             LicenseStatus::Corrupted(_) => "corrupted",
         }
-            .to_string()
+        .to_string()
     }
 }
 

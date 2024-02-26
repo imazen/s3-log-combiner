@@ -379,7 +379,7 @@ struct GroupedSinks {
 // impl iter over sinks and all, &SplitDataSink
 
 impl GroupedSinks {
-    fn iter_sinks(&self) -> impl Iterator<Item=&SplitDataSink> {
+    fn iter_sinks(&self) -> impl Iterator<Item = &SplitDataSink> {
         self.sinks.iter().chain(std::iter::once(&self.all))
     }
     fn update_with(&mut self, log_line: &S3LogLine) {
