@@ -1,23 +1,18 @@
+use crate::cli::FetchArgs;
+use crate::progress::*;
 use futures_util::{StreamExt, TryStreamExt};
 use rusoto_core::{HttpClient, Region, RusotoError};
 use rusoto_s3::{GetObjectError, GetObjectRequest, ListObjectsV2Request, S3Client, S3};
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
+use std::path::Path;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use futures_util::stream::FuturesUnordered;
+use std::time::Duration;
 use tokio::fs;
-use tokio::fs::File;
-use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::sleep;
 use tokio_stream::wrappers::ReceiverStream;
-use crate::cli::FetchArgs;
-use crate::progress::*;
-
 
 #[derive(Debug, Clone)]
 pub struct BlobEntry {
@@ -27,11 +22,12 @@ pub struct BlobEntry {
     pub batch_index: usize,
     pub first_index_of_batch: usize,
 }
+
 #[derive(Debug, Clone)]
 pub struct BlobResult {
-    entry: BlobEntry,
-    contents: Option<Vec<u8>>,
-    error: Option<Box<String>>,
+    pub(crate) entry: BlobEntry,
+    pub(crate) contents: Option<Vec<u8>>,
+    pub(crate) error: Option<Box<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -46,7 +42,8 @@ struct DataCollection {
     outputs: Arc<Mutex<Vec<BatchOutputMetadata>>>,
     results: Arc<Mutex<BTreeMap<usize, BlobResult>>>,
 }
-fn create_s3_client(config: &FetchArgs, region: &str) -> Arc<S3Client>{
+
+fn create_s3_client(config: &FetchArgs, region: &str) -> Arc<S3Client> {
     let region = config
         .from_region
         .parse::<Region>()
@@ -77,15 +74,12 @@ pub async fn fetch(config: FetchArgs) {
         ); // Placeholder for demonstration
     }
 
-    let from_s3_client = create_s3_client(&config, &config
-        .from_region);
-    let to_s3_client = create_s3_client(&config, &config
-        .to_region);
+    let from_s3_client = create_s3_client(&config, &config.from_region);
+    // let to_s3_client = create_s3_client(&config, &config.to_region);
     // The channel between listing and fetching
     let (entry_tx, entry_rx) = mpsc::channel::<BlobEntry>(config.max_fetch_connections * 2);
     // The channel between fetching and ordering
     let (blob_tx, blob_rx) = mpsc::channel::<BlobResult>(config.fetch_batch_size_kb);
-
 
     // The channel between ordered results and writing to disk. This (pointlessly)
     // keeps write components as separate messages. They're already in ram tho.
@@ -93,7 +87,11 @@ pub async fn fetch(config: FetchArgs) {
     // However, we would want special handling for checkpointing.
 
     // Launch listing task
-    let listing_task = tokio::spawn(list_s3_logs(from_s3_client.clone(), config.clone(), entry_tx));
+    let listing_task = tokio::spawn(list_s3_logs(
+        from_s3_client.clone(),
+        config.clone(),
+        entry_tx,
+    ));
 
     // Launch fetching task
     let fetching_task = tokio::spawn(fetch_logs(
@@ -113,13 +111,7 @@ pub async fn fetch(config: FetchArgs) {
     status_task.abort();
 }
 
-
-
-async fn drain_ready_batches(
-    finished: bool,
-    data: &DataCollection,
-    config: &FetchArgs,
-) {
+async fn drain_ready_batches(finished: bool, data: &DataCollection, config: &FetchArgs) {
     let mut outputs = data.outputs.lock().await;
     let mut results = data.results.lock().await;
 
@@ -196,7 +188,12 @@ async fn drain_ready_batches(
                         batch.push(results.remove(&i).unwrap());
                     }
 
-                    crate::process::process_batch(batch, output.last_key_ingested.clone().unwrap(), &config).await;
+                    crate::process::process_batch(
+                        batch,
+                        output.last_key_ingested.clone().unwrap(),
+                        &config,
+                    )
+                    .await;
 
                     output.pending = false; // Mark this batch as not pending anymore
                 } else if finished {
@@ -216,16 +213,18 @@ async fn drain_ready_batches(
         }
     }
 }
+
 impl Default for BatchOutputMetadata {
     fn default() -> Self {
         BatchOutputMetadata {
-            first_item_index: None, // No items initially
-            last_item_index: None,  // No items initially
-            last_key_ingested: None,       // No path initially
-            pending: true,          // Assuming new batches are pending by default
+            first_item_index: None,  // No items initially
+            last_item_index: None,   // No items initially
+            last_key_ingested: None, // No path initially
+            pending: true,           // Assuming new batches are pending by default
         }
     }
 }
+
 fn populate<T: Clone>(index: usize, v: &mut Vec<T>, default_value: T) {
     let target_len = index + 1; // Convert index to usize for compatibility with Vec length
 
@@ -235,11 +234,9 @@ fn populate<T: Clone>(index: usize, v: &mut Vec<T>, default_value: T) {
         v.resize(target_len, default_value);
     }
 }
-async fn main_processing(
-    rx: Receiver<BlobResult>,
-    config_copy: FetchArgs,
-) {
-    let mut tasks = FuturesUnordered::new();
+
+async fn main_processing(rx: Receiver<BlobResult>, config_copy: FetchArgs) {
+    //let mut tasks = FuturesUnordered::new();
     let root = DataCollection {
         outputs: Arc::new(Mutex::new(Vec::new())),
         results: Arc::new(Mutex::new(BTreeMap::new())),
@@ -282,6 +279,9 @@ async fn main_processing(
         println!("Emptied unordered results stream");
     }
     drain_ready_batches(true, &out, &config).await;
+
+    println!("Job Complete!");
+    crate::progress::JOB_FINISHED.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
 pub async fn create_parent_dirs_if_missing(file_path: &Path) -> std::io::Result<()> {
@@ -297,7 +297,6 @@ pub async fn create_dirs_if_missing(file_path: &Path) {
     } else {
     }
 }
-
 
 async fn fetch_logs(
     s3: Arc<S3Client>,
@@ -446,11 +445,11 @@ async fn list_s3_logs(s3: Arc<S3Client>, config: FetchArgs, tx: Sender<BlobEntry
                     }
                     for object in contents {
                         est_bytes += object.e_tag.map(|t| t.len() + 15).unwrap_or(0)
-                                + object.last_modified.map(|t| t.len() + 30).unwrap_or(0)
-                                + object.storage_class.map(|t| t.len() + 30).unwrap_or(0)
-                                //+ object.owner.map(|t| t.display_name.len() + 15).unwrap_or(0)
-                                + object.size.as_ref().map(|ref t| 30).unwrap_or(0)
-                                + object.key.as_ref().map(|ref t| t.len() + 30).unwrap_or(0);
+                            + object.last_modified.map(|t| t.len() + 30).unwrap_or(0)
+                            + object.storage_class.map(|t| t.len() + 30).unwrap_or(0)
+                            //+ object.owner.map(|t| t.display_name.len() + 15).unwrap_or(0)
+                            + object.size.as_ref().map(|ref t| 30).unwrap_or(0)
+                            + object.key.as_ref().map(|ref t| t.len() + 30).unwrap_or(0);
                         if let Some(key) = object.key {
                             let size = object.size.unwrap_or(0);
 
@@ -499,7 +498,6 @@ async fn list_s3_logs(s3: Arc<S3Client>, config: FetchArgs, tx: Sender<BlobEntry
         }
     }
 }
-
 
 impl PartialEq for BlobResult {
     fn eq(&self, other: &Self) -> bool {

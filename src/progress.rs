@@ -1,8 +1,7 @@
+use crate::cli::FetchArgs;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::sleep;
-use crate::cli::FetchArgs;
-
 
 pub static LIST_REQUESTS: AtomicUsize = AtomicUsize::new(0);
 pub static LIST_REQUEST_EST_BYTES: AtomicUsize = AtomicUsize::new(0);
@@ -19,12 +18,10 @@ pub static BLOB_RESULTS_DEQUEUED: AtomicUsize = AtomicUsize::new(0);
 
 pub static BLOB_RESULTS_ORDERED: AtomicUsize = AtomicUsize::new(0);
 
-
 pub static FILES_WRITTEN: AtomicUsize = AtomicUsize::new(0);
 pub static UNRECOVERABLE_ERRORS: AtomicUsize = AtomicUsize::new(0);
 pub static BLOB_BYTES_WRITTEN: AtomicUsize = AtomicUsize::new(0);
 pub static BLOB_BYTES_UPLOADED: AtomicUsize = AtomicUsize::new(0);
-
 
 static LAST_UPDATE_BYTES_READ: AtomicUsize = AtomicUsize::new(0);
 static LAST_UPDATE_EST_LIST_BYTES_READ: AtomicUsize = AtomicUsize::new(0);
@@ -32,7 +29,7 @@ static LAST_UPDATE_BYTES_WRITTEN: AtomicUsize = AtomicUsize::new(0);
 static LAST_UPDATE_BYTES_UPLOADED: AtomicUsize = AtomicUsize::new(0);
 static LAST_UPDATE_PRINTED: AtomicU64 = AtomicU64::new(0);
 
-static JOB_FINISHED: AtomicBool = AtomicBool::new(false);
+pub(crate) static JOB_FINISHED: AtomicBool = AtomicBool::new(false);
 
 static UPDATE_FREQUENCY_SECONDS: i32 = 8;
 

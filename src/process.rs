@@ -1,132 +1,74 @@
+use crate::cli::FetchArgs;
+use crate::fetch::{create_dirs_if_missing, BlobResult};
 use std::path::PathBuf;
 use tokio::fs::File;
 use tokio::io::{AsyncWriteExt, BufWriter};
-use tokio::sync::mpsc::Receiver;
-use tokio_stream::wrappers::ReceiverStream;
-use crate::cli::FetchArgs;
-use crate::fetch::{BlobResult, create_dirs_if_missing};
 
-pub(crate) async fn process_batch(items: Vec<BlobResult>, last_item_ingested: String, config: &FetchArgs){
-
+pub(crate) async fn process_batch(
+    items: Vec<BlobResult>,
+    last_item_ingested: String,
+    config: &FetchArgs,
+) {
     // Should write files, upload files, upload checkpoint markers,
     // generate and write or upload summaries
     //
+    write_batch(items, last_item_ingested, config).await;
 }
 
+async fn write_batch(items: Vec<BlobResult>, last_item_ingested: String, config: &FetchArgs) {
+    let mut successful_blob_count = 0;
+    let mut error_writer: Option<BufWriter<File>> = None;
 
-async fn finish_writing(
-    current_writer: Option<&mut BufWriter<File>>,
-    current_error_writer: Option<&mut BufWriter<File>>,
-    current_writer_path: Option<&PathBuf>,
-    current_error_path: Option<&PathBuf>,
-    current_blob_count: i32,
-) {
-    // Flush and close the current file if it exists
-    let has_writer = current_writer.is_some();
-    if let Some(writer) = current_writer {
-        writer
-            .flush()
-            .await
-            .expect("Failed to flush and close file");
+    let mut new_file = PathBuf::from(
+        &config
+            .output_directory
+            .as_ref()
+            .expect("Only output directory is supported so far"),
+    );
+    new_file.push(&last_item_ingested);
+    let mut writer_path = new_file.clone();
+    writer_path.set_extension("incomplete");
+    let mut err_path = new_file.clone();
+    err_path.set_extension("err");
+    // Create new file.
+    create_dirs_if_missing(&writer_path).await;
 
-        crate::fetch::FILES_WRITTEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    // delete .incomplete and .err if they exist
+    let err_exists = tokio::fs::try_exists(&err_path).await;
+    if let Ok(true) = err_exists {
+        let _ = tokio::fs::remove_file(&err_path).await;
     }
 
-    if has_writer {
-        if let Some(current_path) = current_writer_path {
-            if current_error_writer.is_none() {
-                // rename.
-                let mut final_name = current_path.clone();
-                final_name.set_extension("");
-                tokio::fs::rename(current_path, &final_name).await.unwrap();
-                println!(
-                    "Combined {:?} blobs into {:?}",
-                    current_blob_count,
-                    &final_name.file_name().unwrap()
-                );
-            }
-        }
-    }
-    if let Some(writer) = current_error_writer {
-        writer
-            .flush()
-            .await
-            .expect("Failed to flush and close error file");
-        eprintln!(
-            "See unrecoverable errors in {:?}",
-            current_error_path.unwrap()
-        )
-    }
-}
+    // Will overwrite anyway
+    let file = File::create(&writer_path)
+        .await
+        .expect("Failed to create file");
+    let mut writer = BufWriter::new(file);
 
-async fn write_logs(rx: Receiver<crate::fetch::OrderedBlobResult>, config: FetchArgs) {
-    let mut current_writer: Option<BufWriter<File>> = None;
-    let mut current_writer_path: Option<PathBuf> = None;
-    let mut current_error_path: Option<PathBuf> = None;
-    let mut current_blob_count = 0;
-    let mut current_error_writer: Option<BufWriter<File>> = None;
-
-    let mut stream = ReceiverStream::new(rx);
-
-    while let Some(result) = stream.next().await {
-        crate::fetch::ORDERED_WRITES_DEQUEUED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        if let Some(new_file) = &result.starts_new_batch {
-            finish_writing(
-                current_writer.as_mut(),
-                current_error_writer.as_mut(),
-                current_writer_path.as_ref(),
-                current_error_path.as_ref(),
-                current_blob_count,
-            )
-                .await;
-            let mut writer_path = new_file.clone();
-            writer_path.set_extension("incomplete");
-            current_writer_path = Some(writer_path.clone());
-            let mut err_path = new_file.clone();
-            err_path.set_extension("err");
-            current_error_path = Some(err_path.clone());
-            current_blob_count = 0;
-            // Create new file.
-            create_dirs_if_missing(&writer_path).await;
-
-            // delete .incomplete and .err if they exist
-            let err_exists = tokio::fs::try_exists(&err_path).await;
-            if let Ok(true) = err_exists {
-                let _ = tokio::fs::remove_file(&err_path).await;
-            }
-
-            // Will overwrite anyway
-            let file = File::create(&writer_path)
-                .await
-                .expect("Failed to create file");
-            current_writer = Some(BufWriter::new(file));
-            current_error_writer = None;
-        }
-
+    for result in items {
         // Write contents to the current file
-        if let Some(contents) = result.blob.contents {
-            current_blob_count += 1;
-            if let Some(writer) = current_writer.as_mut() {
-                let contents_len = contents.len();
-                write_filtered(writer, contents, &config).await.expect("Failed to write data");
+        if let Some(contents) = result.contents {
+            successful_blob_count += 1;
+            let contents_len = contents.len();
+            write_filtered(&mut writer, contents, &config)
+                .await
+                .expect("Failed to write data");
 
-                crate::fetch::BLOB_BYTES_WRITTEN.fetch_add(contents_len, std::sync::atomic::Ordering::Relaxed);
-            } else {
-                panic!();
-            }
+            crate::progress::BLOB_BYTES_WRITTEN
+                .fetch_add(contents_len, std::sync::atomic::Ordering::Relaxed);
         }
-        if let Some(err) = result.blob.error {
-            if current_error_writer.is_none() {
-                let file = File::create(current_error_path.as_ref().unwrap())
+        if let Some(err) = result.error {
+            if error_writer.is_none() {
+                let file = File::create(err_path.as_path())
                     .await
                     .expect("Failed to create error file");
-                current_error_writer = Some(BufWriter::new(file));
+                error_writer = Some(BufWriter::new(file));
             }
-            if let Some(w) = current_error_writer.as_mut() {
+            if let Some(w) = error_writer.as_mut() {
                 w.write(
                     format!(
                         "Failed to fetch {:?} - error: {:?}\n",
-                        result.blob.entry.name, err
+                        result.entry.name, err
                     )
                         .as_bytes(),
                 )
@@ -136,25 +78,41 @@ async fn write_logs(rx: Receiver<crate::fetch::OrderedBlobResult>, config: Fetch
         }
     }
 
-    // Flush and close the last file if it exists
-    finish_writing(
-        current_writer.as_mut(),
-        current_error_writer.as_mut(),
-        current_writer_path.as_ref(),
-        current_error_path.as_ref(),
-        current_blob_count,
-    )
-        .await;
-    println!("Flushed all files to disk. Complete!");
-    crate::fetch::JOB_FINISHED.store(true, std::sync::atomic::Ordering::Relaxed);
+    writer
+        .flush()
+        .await
+        .expect("Failed to flush and close file");
+
+    crate::progress::FILES_WRITTEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+    if error_writer.is_none() {
+        // rename.
+        let mut final_name = writer_path.clone();
+        final_name.set_extension("");
+        tokio::fs::rename(writer_path, &final_name).await.unwrap();
+        println!(
+            "Combined {:?} blobs into {:?}",
+            successful_blob_count,
+            &final_name.file_name().unwrap()
+        );
+    }
+
+    if let Some(mut writer) = error_writer {
+        writer
+            .flush()
+            .await
+            .expect("Failed to flush and close error file");
+        eprintln!("See unrecoverable errors in {:?}", err_path)
+    }
 }
 
-async fn write_filtered(writer: &mut BufWriter<File>, contents: Vec<u8>, config: &FetchArgs)
-                        -> std::io::Result<()> {
+async fn write_filtered(
+    writer: &mut BufWriter<File>,
+    contents: Vec<u8>,
+    config: &FetchArgs,
+) -> std::io::Result<()> {
     //if config.clear_columns.is_empty(){
-    writer
-        .write_all(&contents)
-        .await?;
+    writer.write_all(&contents).await?;
     if !contents.ends_with(b"\n") {
         writer.write_u8(b'\n').await?;
     }
@@ -168,5 +126,4 @@ async fn write_filtered(writer: &mut BufWriter<File>, contents: Vec<u8>, config:
     // config.clear_columns contains Vec<u32> of zero-based columns to replace with "-"
     // When the entire line has been buffered and all the cleared columns dropped,
     // call write_all
-
 }
