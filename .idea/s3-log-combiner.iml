@@ -6,6 +6,11 @@
       <excludeFolder url="file://$MODULE_DIR$/imazen-licenses-logs" />
       <excludeFolder url="file://$MODULE_DIR$/logs.licenses.imazen.net" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
+      <excludeFolder url="file://$MODULE_DIR$/_logs.licenses.imazen.net" />
+      <excludeFolder url="file://$MODULE_DIR$/_logs.licenses2.imazen.net" />
+      <excludeFolder url="file://$MODULE_DIR$/logs.licenses2.imazen.net" />
+      <excludeFolder url="file://$MODULE_DIR$/logs.logs.licenses.imazen.net" />
+      <excludeFolder url="file://$MODULE_DIR$/parsed" />
     </content>
     <orderEntry type="inheritedJdk" />
     <orderEntry type="sourceFolder" forTests="false" />

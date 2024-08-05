@@ -5,3 +5,5 @@
 .env
 imazen.ps1
 /parsed
+/imazen-licenses-logs
+/logs.licenses.imazen.net
