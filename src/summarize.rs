@@ -481,6 +481,15 @@ fn process_lines(
         }
 
         if let Some(split_value) = log_line.split_value {
+            // Filter by license id if specified
+            if let Some(ref license_id) = config.license_id {
+                if split_value != license_id {
+                    continue;
+                } else {
+                    println!("Found log line for license id {license_id}")
+                }
+            }
+
             if !licenses_requested.contains(split_value) {
                 fetch_tx
                     .blocking_send(FetchBlobRequest::from_s3_log_line(&log_line, &output_dir))

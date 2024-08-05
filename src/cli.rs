@@ -108,12 +108,7 @@ pub struct FetchArgs {
     /// AWS secret access key
     #[arg(long, env = "AWS_SECRET_ACCESS_KEY", value_parser)]
     pub secret_key: String,
-    #[arg(
-        long,
-        env = "AWS_DEFAULT_REGION",
-        value_parser,
-        default_value = "us-west-2"
-    )]
+
     /// Quiet flag
     #[arg(long, short, action)]
     pub quiet: bool,
@@ -177,6 +172,9 @@ pub struct QueryParseArgs {
     // license_id
     #[arg(long, value_parser, default_value = "license_id")]
     pub split_by_key: String,
+
+    #[arg(long, value_parser)]
+    pub license_id: Option<String>,
     // manager_id
     #[arg(long, value_parser, default_value = "manager_id")]
     pub keep_unique_of_key: String,
