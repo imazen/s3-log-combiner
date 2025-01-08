@@ -1,9 +1,9 @@
 use crate::cli::FetchArgs;
 use crate::fetch::{create_dirs_if_missing, BlobResult};
+use async_compression::tokio::write::ZstdEncoder;
 use std::path::PathBuf;
 use tokio::fs::File;
 use tokio::io::{AsyncWriteExt, BufWriter};
-
 pub(crate) async fn process_batch(
     items: Vec<BlobResult>,
     last_item_ingested: String,
@@ -43,7 +43,8 @@ async fn write_batch(items: Vec<BlobResult>, last_item_ingested: String, config:
     let file = File::create(&writer_path)
         .await
         .expect("Failed to create file");
-    let mut writer = BufWriter::new(file);
+    let mut writer =
+        ZstdEncoder::with_quality(BufWriter::new(file), async_compression::Level::Default);
 
     for result in items {
         // Write contents to the current file
@@ -70,10 +71,10 @@ async fn write_batch(items: Vec<BlobResult>, last_item_ingested: String, config:
                         "Failed to fetch {:?} - error: {:?}\n",
                         result.entry.name, err
                     )
-                        .as_bytes(),
+                    .as_bytes(),
                 )
-                    .await
-                    .expect("TODO: panic message");
+                .await
+                .expect("TODO: panic message");
             }
         }
     }
@@ -83,12 +84,14 @@ async fn write_batch(items: Vec<BlobResult>, last_item_ingested: String, config:
         .await
         .expect("Failed to flush and close file");
 
+    writer.shutdown().await.unwrap();
+
     crate::progress::FILES_WRITTEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
     if error_writer.is_none() {
         // rename.
         let mut final_name = writer_path.clone();
-        final_name.set_extension("");
+        final_name.set_extension("zst");
         tokio::fs::rename(writer_path, &final_name).await.unwrap();
         println!(
             "Combined {:?} blobs into {:?}",
@@ -107,7 +110,7 @@ async fn write_batch(items: Vec<BlobResult>, last_item_ingested: String, config:
 }
 
 async fn write_filtered(
-    writer: &mut BufWriter<File>,
+    writer: &mut ZstdEncoder<BufWriter<File>>,
     contents: Vec<u8>,
     config: &FetchArgs,
 ) -> std::io::Result<()> {
