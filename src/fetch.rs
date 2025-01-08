@@ -109,6 +109,9 @@ pub async fn fetch(config: FetchArgs) {
     let (_listing_result, _fetching_result, _reordering_resul) =
         tokio::join!(listing_task, fetching_task, main_task);
     status_task.abort();
+    if !config.quiet {
+        print_status_update(true, &config);
+    }
 }
 
 async fn drain_ready_batches(finished: bool, data: &DataCollection, config: &FetchArgs) {
