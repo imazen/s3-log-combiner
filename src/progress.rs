@@ -77,10 +77,6 @@ pub(crate) async fn print_status_update_tokio(config: FetchArgs) {
                     BLOB_RESULTS_ENQUEUED.load(std::sync::atomic::Ordering::Relaxed) as i64
                         - BLOB_RESULTS_DEQUEUED.load(std::sync::atomic::Ordering::Relaxed) as i64;
 
-                let blob_reordering =
-                    BLOB_RESULTS_DEQUEUED.load(std::sync::atomic::Ordering::Relaxed) as i64
-                        - BLOB_RESULTS_ORDERED.load(std::sync::atomic::Ordering::Relaxed) as i64;
-
                 let avg_blobs_per_list = FETCHES_ENQUEUED
                     .load(std::sync::atomic::Ordering::Relaxed)
                     / (LIST_REQUESTS.load(std::sync::atomic::Ordering::Relaxed) + 1);
@@ -96,8 +92,8 @@ pub(crate) async fn print_status_update_tokio(config: FetchArgs) {
                 let total_requests = LIST_REQUESTS.load(std::sync::atomic::Ordering::Relaxed)
                     + BLOB_RESULTS_ENQUEUED.load(std::sync::atomic::Ordering::Relaxed);
 
-                println!("{:.2}Mbps down, {:.2}Mbps disk, {} fetches queued, {} results reordering, {} results queued, {} fatal errors, {:.2} Gb written, {:.2} Gb fetched, {} HTTP requests, {} avg blobs/listing",
-                         mbps_read, mbps_written, fetches_net, blob_reordering, blob_results_net, total_unrecoverable_errors, total_gb_written, total_gb_read, total_requests, avg_blobs_per_list);
+                println!("{:.2}Mbps down, {:.2}Mbps disk, {} fetches queued, {} results queued, {} fatal errors, {:.2} Gb written, {:.2} Gb fetched, {} HTTP requests, {} avg blobs/listing",
+                         mbps_read, mbps_written, fetches_net, blob_results_net, total_unrecoverable_errors, total_gb_written, total_gb_read, total_requests, avg_blobs_per_list);
             }
             LAST_UPDATE_BYTES_READ.store(
                 BLOB_BYTES_READ.load(std::sync::atomic::Ordering::Relaxed),

@@ -1,18 +1,18 @@
+use crate::cli::QueryParseArgs;
+use crate::log_syntax::{S3LogLine, SplitLogColumns};
 use crate::telemetry::Report;
 use crate::telemetry::Summary;
+use async_compression::tokio::bufread;
+use chrono::{DateTime, Datelike, TimeZone, Utc};
+use futures_util::{StreamExt, TryStreamExt};
+use rusoto_core::{HttpClient, Region};
+use rusoto_s3::{S3Client, S3};
 use std::collections::{HashMap, HashSet};
 use std::ops::Index;
 use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::Arc;
 use std::{env, fs};
-
-use crate::cli::QueryParseArgs;
-use crate::log_syntax::{S3LogLine, SplitLogColumns};
-use chrono::{DateTime, Datelike, TimeZone, Utc};
-use futures_util::{StreamExt, TryStreamExt};
-use rusoto_core::{HttpClient, Region};
-use rusoto_s3::{S3Client, S3};
 
 #[derive(Debug, Clone)]
 struct SplitUnique {
@@ -163,12 +163,23 @@ async fn enqueue_lines(input_paths: Vec<PathBuf>, tx: mpsc::Sender<String>) -> i
         //println!("Reading {path_str}");
         let file = OpenOptions::new().read(true).open(path).await?;
         let reader = BufReader::new(file);
-        let mut lines = reader.lines();
 
-        while let Some(line) = lines.next_line().await? {
-            tx.send(line)
-                .await
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        if path_str.ends_with(".zst") {
+            let mut decoder = bufread::ZstdDecoder::new(reader);
+            let mut buf_decoder = BufReader::new(decoder);
+            let mut lines = buf_decoder.lines();
+            while let Some(line) = lines.next_line().await? {
+                tx.send(line)
+                    .await
+                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            }
+        } else {
+            let mut lines = reader.lines();
+            while let Some(line) = lines.next_line().await? {
+                tx.send(line)
+                    .await
+                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            }
         }
     }
     Ok(())

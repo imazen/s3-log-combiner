@@ -156,8 +156,12 @@ pub fn last_complete_file_in_directory<P: AsRef<Path>>(directory_path: P) -> Opt
 
         // Get the last file's name
         if let Some(last_file_path) = files.last() {
+            // remove any extension like .tar.gz or .zst if present. But warn user if one is present.
+            if last_file_path.extension().is_some() {
+                println!("Resuming S3 bucket listing based on existence of file {:?}, assuming key is {:?}", last_file_path.file_name(), last_file_path.file_stem());
+            }
             return last_file_path
-                .file_name()
+                .file_stem()
                 .and_then(|name| name.to_str())
                 .map(|s| s.to_string());
         }
