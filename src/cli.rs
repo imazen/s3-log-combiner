@@ -84,10 +84,10 @@ pub struct FetchArgs {
     // #[arg(long, default_values_t = vec![0, 5, 11, 12, 13, 14, 18], value_parser)]
     // pub clear_columns: Vec<u32>,
     //
-    // /// When specified, only the listed columns will be retained, all others will be replaced with -
-    // /// Inverse of clear_columns
-    // #[arg(long, value_parser)]
-    // pub preserve_columns: Option<Vec<u32>>,
+    /// When specified, only the listed columns will be retained, all others will be replaced with -
+    /// Inverse of clear_columns
+    #[arg(long, default_values_t = vec![1,2,3,6,7,8,9,10],value_parser)]
+    pub keep_columns: Vec<u32>,
     //
     // /// When specified, columns will be deleted rather than replaced with '-'
     // /// This changes the file format

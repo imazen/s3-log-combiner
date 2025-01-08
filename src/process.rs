@@ -1,9 +1,11 @@
 use crate::cli::FetchArgs;
 use crate::fetch::{create_dirs_if_missing, BlobResult};
+use crate::log_syntax::SplitLogColumns;
 use async_compression::tokio::write::ZstdEncoder;
 use std::path::PathBuf;
 use tokio::fs::File;
 use tokio::io::{AsyncWriteExt, BufWriter};
+
 pub(crate) async fn process_batch(
     items: Vec<BlobResult>,
     last_item_ingested: String,
@@ -16,6 +18,7 @@ pub(crate) async fn process_batch(
 }
 
 async fn write_batch(items: Vec<BlobResult>, last_item_ingested: String, config: &FetchArgs) {
+    let current_time = chrono::Utc::now();
     let mut successful_blob_count = 0;
     let mut error_writer: Option<BufWriter<File>> = None;
 
@@ -43,8 +46,14 @@ async fn write_batch(items: Vec<BlobResult>, last_item_ingested: String, config:
     let file = File::create(&writer_path)
         .await
         .expect("Failed to create file");
-    let mut writer =
-        ZstdEncoder::with_quality(BufWriter::new(file), async_compression::Level::Default);
+    let enable_ldm = async_compression::zstd::CParameter::enable_long_distance_matching(true);
+    let mut encoder = ZstdEncoder::with_quality_and_params(
+        BufWriter::new(file),
+        async_compression::Level::Default,
+        &[enable_ldm],
+    );
+
+    let mut writer = BufWriter::new(encoder);
 
     for result in items {
         // Write contents to the current file
@@ -86,8 +95,6 @@ async fn write_batch(items: Vec<BlobResult>, last_item_ingested: String, config:
 
     writer.shutdown().await.unwrap();
 
-    crate::progress::FILES_WRITTEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
     if error_writer.is_none() {
         // rename.
         let mut final_name = writer_path.clone();
@@ -100,6 +107,14 @@ async fn write_batch(items: Vec<BlobResult>, last_item_ingested: String, config:
         );
     }
 
+    let elapsed = chrono::Utc::now() - current_time;
+    crate::progress::TIME_SPENT_WRITING.fetch_add(
+        elapsed.num_milliseconds() as u64,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+
+    crate::progress::FILES_WRITTEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
     if let Some(mut writer) = error_writer {
         writer
             .flush()
@@ -110,23 +125,42 @@ async fn write_batch(items: Vec<BlobResult>, last_item_ingested: String, config:
 }
 
 async fn write_filtered(
-    writer: &mut ZstdEncoder<BufWriter<File>>,
+    writer: &mut BufWriter<ZstdEncoder<BufWriter<File>>>,
     contents: Vec<u8>,
     config: &FetchArgs,
 ) -> std::io::Result<()> {
-    //if config.clear_columns.is_empty(){
-    writer.write_all(&contents).await?;
-    if !contents.ends_with(b"\n") {
-        writer.write_u8(b'\n').await?;
+    // parse the contents Vec<u8> into a &str, iterate lines,
+    // use SplitLogColumns::new(line) to iterate columns,
+    // keep only columns 1-3 and 6-10, write '-' to the rest.
+    // buffered writing to the writer to improve compression.
+    // ensure all lines end in \n
+    if config.keep_columns.len() == 0 {
+        writer.write_all(&contents).await?;
+        if !contents.ends_with(b"\n") {
+            writer.write_u8(b'\n').await?;
+        }
+        return Ok(());
     }
-    return Ok(());
-    //}
-    // TODO: implement
-    //let mut buffer = Vec::with_capacity(4096);
-    // loop through contents, one line (\n) at a time
-    // each cell is space delimited
-    // Don't use utf-8, just do bytewise seeking.
-    // config.clear_columns contains Vec<u32> of zero-based columns to replace with "-"
-    // When the entire line has been buffered and all the cleared columns dropped,
-    // call write_all
+
+    let keep_columns: Vec<usize> = config.keep_columns.iter().map(|c| *c as usize).collect();
+    let utf8_contents = std::str::from_utf8(&contents).expect("Log file is not valid UTF-8");
+    let mut lines = utf8_contents.lines();
+    let mut filtered_line = String::new();
+    while let Some(line) = lines.next() {
+        filtered_line.clear();
+        let mut columns = SplitLogColumns::new(line);
+
+        for (i, column) in columns.enumerate() {
+            if keep_columns.contains(&i) {
+                filtered_line.push_str(&column);
+            } else {
+                filtered_line.push('-');
+            }
+            filtered_line.push(' ');
+        }
+        filtered_line.push('\n');
+        writer.write_all(filtered_line.as_bytes()).await?;
+    }
+
+    Ok(())
 }

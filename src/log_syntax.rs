@@ -86,6 +86,7 @@ impl<'a> S3LogLine<'a> {
     pub fn from_line_str(line: &'a str, split_by_key: &str, unique_key: &str) -> S3LogLine<'a> {
         let mut parts = SplitLogColumns::new(line);
 
+        // We skip col 0
         let bucket = parts.nth(1).unwrap_or("");
         let time;
         if let Some(time_str) = parts.nth(0) {
@@ -100,9 +101,12 @@ impl<'a> S3LogLine<'a> {
         }
 
         let ip_str = parts.nth(0).unwrap_or(""); // Accounts for the previous next()
+
+        // Skip col 4 and 5, requester and request id
         let operation = parts.nth(2).unwrap_or("");
         let key = parts.nth(0).unwrap_or(""); // Skips requester ID
         let request_command = parts.nth(0).unwrap_or(""); // Skips to Request-URI
+                                                          // Skip everything after column 10
         let request_uri = request_command.split(' ').nth(1).unwrap_or("");
 
         let response_status_str = parts.next().unwrap_or("");
