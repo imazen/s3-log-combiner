@@ -82,6 +82,17 @@ pub fn expand_input_filenames_recursive(files_and_dirs: Vec<PathBuf>) -> Vec<Pat
             }
         } else if file_or_dir.is_dir() {
             // If it's a directory, expand it to include all files (excluding .incomplete and .err)
+            // unless it starts with a _ or .
+            let str_lossy = file_or_dir.file_name().unwrap().to_string_lossy();
+
+            if str_lossy.starts_with("_") || str_lossy.starts_with(".") {
+                println!(
+                    "Skipping directory {:?} because it starts with _ or .",
+                    file_or_dir
+                );
+                continue;
+            }
+
             if let Ok(entries) = fs::read_dir(&file_or_dir) {
                 for entry in entries {
                     if let Ok(entry) = entry {
@@ -111,6 +122,7 @@ pub fn expand_input_filenames_recursive(files_and_dirs: Vec<PathBuf>) -> Vec<Pat
 
     // Sort the resulting files alphabetically
     expanded_files.sort();
+    expanded_files.reverse();
 
     expanded_files
 }
