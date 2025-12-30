@@ -3,6 +3,7 @@ use crate::log_syntax::{S3LogLine, SplitLogColumns};
 use crate::telemetry::Report;
 use crate::telemetry::Summary;
 use async_compression::tokio::bufread;
+use atomic_refcell::AtomicRefCell;
 use chrono::{DateTime, Datelike, TimeZone, Utc};
 use futures_util::{StreamExt, TryStreamExt};
 use rusoto_core::{HttpClient, Region};
@@ -11,16 +12,17 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Index;
 use std::path::{Path, PathBuf};
 use std::process;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::{env, fs};
 
 #[derive(Debug, Clone)]
 struct SplitUnique {
     unique_id: String,
-    last_full_report_from: DateTime<Utc>,
-    last_full_report: Option<Report>,
-    last_report_from: DateTime<Utc>,
-    last_report: Option<Report>,
+    pub last_full_report_from: DateTime<Utc>,
+    pub last_full_report: Option<Report>,
+    pub last_report_from: DateTime<Utc>,
+    pub last_report: Option<Report>,
 }
 
 impl SplitUnique {
@@ -34,6 +36,9 @@ impl SplitUnique {
         }
     }
 }
+
+// global truncated var
+static TRUNCATED_TOTAL: AtomicU64 = AtomicU64::new(0);
 
 impl SplitUnique {
     fn parse_line(line: &S3LogLine) -> Option<Report> {
@@ -54,6 +59,11 @@ impl SplitUnique {
                 self.last_full_report = self.last_report.clone();
             }
             self.last_full_report_from = line.time;
+        } else {
+            TRUNCATED_TOTAL.store(
+                TRUNCATED_TOTAL.load(std::sync::atomic::Ordering::Relaxed) + 1,
+                std::sync::atomic::Ordering::Relaxed,
+            );
         }
     }
 }
@@ -66,7 +76,7 @@ struct SplitDataSink {
     split_id: String,
     split_date_from: DateTime<Utc>,
     split_date_to: DateTime<Utc>,
-    uniques: HashMap<String, SplitUnique>,
+    pub uniques: HashMap<String, SplitUnique>,
     day_sink: bool,
 }
 
@@ -147,7 +157,8 @@ impl SplitDataSink {
 }
 
 use crate::fetch::BlobResult;
-use crate::license_blob::LicenseStatus;
+use crate::license_blob::{LicenseBlob, LicenseStatus};
+use crate::progress::BLOB_BYTES_READ;
 use crate::util::{
     expand_input_filenames_recursive, first_and_last_millisecond_of_day,
     first_and_last_millisecond_of_month,
@@ -165,6 +176,7 @@ async fn enqueue_lines(input_paths: Vec<PathBuf>, tx: mpsc::Sender<String>) -> i
         let reader = BufReader::new(file);
 
         if path_str.ends_with(".zst") {
+            println!("Decompressing {path_str}...");
             let mut decoder = bufread::ZstdDecoder::new(reader);
             let mut buf_decoder = BufReader::new(decoder);
             let mut lines = buf_decoder.lines();
@@ -313,11 +325,22 @@ async fn fetch_licenses(
                 return Err(io::Error::new(io::ErrorKind::Other, e));
             }
         };
-        let bytes = stream.map_ok(|b| b.to_vec()).try_concat().await.unwrap();
+        let bytes = stream
+            .map_ok(|b| b.to_vec())
+            .try_concat()
+            .await
+            .expect("Failed to read blob");
 
-        let str = std::str::from_utf8(&bytes).unwrap();
+        let str = std::str::from_utf8(&bytes).expect("Failed to parse license blob as UTF-8");
 
-        let blob = crate::license_blob::LicenseBlob::from(str).unwrap();
+        let blob =
+            crate::license_blob::LicenseBlob::from(str).expect("Failed to parse license blob");
+
+        if let Some(ref id) = blob.get_str("Id") {
+            LICENSE_BLOBS
+                .borrow_mut()
+                .insert(id.to_string(), blob.clone());
+        }
 
         let status = blob.status();
         let mut target_path = req.to_dir.clone();
@@ -329,6 +352,10 @@ async fn fetch_licenses(
                 target_path.set_extension(format!("{}.txt", status.as_str_lowercase()));
             }
         }
+        // create dir if missing
+        let parent_dir = target_path.parent().unwrap();
+        tokio::fs::create_dir_all(parent_dir).await?;
+
         let mut file = OpenOptions::new()
             .write(true)
             .create(true)
@@ -340,6 +367,11 @@ async fn fetch_licenses(
 
     Ok(())
 }
+
+use std::sync::LazyLock;
+// create a map of license ids to license blobs, arc mutex
+static LICENSE_BLOBS: LazyLock<AtomicRefCell<HashMap<String, LicenseBlob>>> =
+    LazyLock::new(|| AtomicRefCell::new(HashMap::new()));
 
 async fn write_files_ig(mut rx: Receiver<(PathBuf, String)>) -> io::Result<()> {
     let result = write_files(rx).await;
@@ -383,7 +415,7 @@ fn process_lines_ig(
 
 struct GroupedSinks {
     sinks: Vec<SplitDataSink>,
-    all: SplitDataSink,
+    pub all: SplitDataSink,
     output_dir: PathBuf,
     split_id: String,
 }
@@ -470,7 +502,11 @@ fn process_lines(
         line_count += 1;
 
         if line_count % 100000 == 0 {
-            println!("Processed {}k lines", line_count / 1000);
+            println!(
+                "Processed {}k lines, with {} truncated",
+                line_count / 1000,
+                TRUNCATED_TOTAL.load(Ordering::Relaxed)
+            );
         }
         if line_count % 1000000 == 0 {
             write_summaries_ig(&data, &write_tx)?;
@@ -524,6 +560,103 @@ fn process_lines(
             //println!("No split value for {line}");
         }
     }
+    // filter sinks to those that have image job activity in the 90 days.
+    // Create a single file report of
+    // license ids, names, unique reporter IPs, software versions, and job counts
+    // also list the last report date.
+    let mut filtered_sinks = data
+        .values()
+        .filter(|s| {
+            s.all.uniques.values().any(|u| {
+                u.last_report.is_some()
+                    && u.last_report_from > Utc::now() - chrono::Duration::days(90)
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut report_contents = String::new();
+    let mut low_usage_report = String::new();
+    let mut violation_report = String::new();
+    for sink in filtered_sinks {
+        let uniquesinks = sink
+            .all
+            .uniques
+            .values()
+            .filter(|u| {
+                u.last_report.is_some()
+                    && u.last_report_from > Utc::now() - chrono::Duration::days(90)
+            })
+            .collect::<Vec<_>>();
+        // sum the job counts
+        let job_count = uniquesinks
+            .iter()
+            .map(|u| {
+                u.last_report
+                    .as_ref()
+                    .unwrap()
+                    .jobs_completed_total
+                    .unwrap()
+            })
+            .sum::<u64>();
+        let last_report_date = uniquesinks
+            .iter()
+            .map(|u| u.last_report_from)
+            .min()
+            .unwrap();
+        let license_id = sink.all.split_id.clone();
+        let license_blob_maybe = LICENSE_BLOBS.borrow().get(&license_id).map(|b| b.clone());
+
+        let mut license_line = format!("License {license_id}");
+        let mut valid_status = None;
+        if let Some(ref license_blob) = license_blob_maybe {
+            license_line = license_blob.summary.clone();
+            match license_blob.status() {
+                LicenseStatus::ActiveWithFeatures(_) => {
+                    valid_status = Some(true);
+                }
+                bad => {
+                    valid_status = Some(false);
+                    license_line.push_str(&format!(" (status: {})", bad.as_str_lowercase()));
+                }
+            }
+        }
+
+        let reporter_ips = uniquesinks
+            .iter()
+            .map(|u| u.last_report.as_ref().unwrap().ip_str.to_string())
+            .collect::<HashSet<_>>();
+        let software_version = uniquesinks
+            .iter()
+            .map(|u| {
+                u.last_report
+                    .as_ref()
+                    .unwrap()
+                    .process
+                    .info_version
+                    .to_string()
+            })
+            .collect::<HashSet<_>>();
+
+        let ip_str = reporter_ips.len();
+        let ver_str = software_version
+            .into_iter()
+            .collect::<Vec<String>>()
+            .join(", ");
+        let line = format!("{license_line}: Usage count in last 90d: {job_count}, last log: {last_report_date} using software: {ver_str} on {ip_str} ips \n");
+        report_contents.push_str(&line);
+
+        if Some(false) == valid_status {
+            if job_count > 0 {
+                violation_report.push_str(&line);
+            }
+        } else if job_count < 100 {
+            low_usage_report.push_str(&line);
+        }
+    }
+    write_tx
+        .blocking_send((output_dir.join("report.txt"), report_contents))
+        .unwrap();
+    write_tx.blocking_send((output_dir.join("low_usage_report.txt"), low_usage_report));
+    write_tx.blocking_send((output_dir.join("violation_report.txt"), violation_report));
 
     // Summarization Phase
     write_summaries(&data, &write_tx)?;
