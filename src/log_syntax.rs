@@ -51,10 +51,10 @@ impl<'a> Iterator for SplitLogColumns<'a> {
             }
 
             if self.bracket_depth == 0 && !self.in_quotes && c != ' ' {
-                end = self.current_pos + 1; // Move end to the next character for non-whitespace
+                end = self.current_pos + c.len_utf8(); // Move end to the next character for non-whitespace
             }
 
-            self.current_pos += 1; // Always move to the next character
+            self.current_pos += c.len_utf8(); // Always move to the next character
         }
 
         // Handle the case where the last character(s) are not whitespace or are within brackets
@@ -262,7 +262,7 @@ mod tests {
                                        "Yes"];
         assert_eq!(v, expected);
 
-        let log_line = S3LogLine::parse_from_str(input, "license_id", "manager_id");
+        let log_line = S3LogLine::from_line_str(input, "license_id", "manager_id");
 
         assert_eq!(log_line.bucket, expected[1]);
         assert_eq!(log_line.ip_str, expected[3]);
