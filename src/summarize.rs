@@ -594,7 +594,7 @@ fn process_lines(
                     .as_ref()
                     .unwrap()
                     .jobs_completed_total
-                    .unwrap()
+                    .unwrap_or(0)
             })
             .sum::<u64>();
         let last_report_date = uniquesinks
