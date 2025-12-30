@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use std::str;
 
+#[derive(Clone)]
 pub struct LicenseBlob {
     pub summary: String,
     pub signature_str: String,
