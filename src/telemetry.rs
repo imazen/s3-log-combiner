@@ -3,18 +3,17 @@
 
 use chrono::{DateTime, TimeZone, Utc};
 
-
 //&decoded_pixels_total=0
 //&decoded_pixels_per_second_max=0&decoded_pixels_per_minute_max=0
 //&decoded_pixels_per_15_mins_max=0&decoded_pixels_per_hour_max=0
-#[derive(Debug,Copy,Clone)]
-struct ThroughputStat{
+#[derive(Debug, Copy, Clone)]
+struct ThroughputStat {
     name: &'static str,
     total: u32,
     per_sec_peak: u32,
     per_min_peak: u32,
     per_hour_peak: u32,
-    per_15min_peak: u32
+    per_15min_peak: u32,
 }
 
 impl ThroughputStat {
@@ -39,15 +38,15 @@ impl ThroughputStat {
 //
 // &blob_read_times_5th=0&blob_read_times_25th=0&blob_read_times_50th=0&blob_read_times_75th=0
 // &blob_read_times_95th=0&blob_read_times_100th=0
-#[derive(Debug,Copy,Clone)]
-struct PercentileStat{
+#[derive(Debug, Copy, Clone)]
+struct PercentileStat {
     name: &'static str,
     p5: u32,
     p25: u32,
     p50: u32,
     p75: u32,
     p95: u32,
-    p100: u32
+    p100: u32,
 }
 
 impl PercentileStat {
@@ -71,19 +70,18 @@ impl PercentileStat {
     }
 }
 
-
 //&proc_guid
 //&proc_working_set_mb
 //&proc_info_version=4.2.8
 //&proc_id_hash=
 //&proc_working_set_mb
 //&proc_iis=
-#[derive(Debug,Clone)]
-struct ProcessAttrs{
+#[derive(Debug, Clone)]
+pub(crate) struct ProcessAttrs {
     // proc_guid=
     guid: String,
     // proc_info_version=
-    info_version: String,
+    pub(crate) info_version: String,
     file_version: String,
     // proc_id_hash
     process_id_hash: Option<String>,
@@ -95,14 +93,20 @@ struct ProcessAttrs{
     //&proc_apppath_hash: (6 char hash)
     app_path_hash: Option<String>,
     // proc_64=0/1
-    is64bit:bool,
+    is64bit: bool,
 }
 impl ProcessAttrs {
     fn parse(pairs: &[(&str, &str)]) -> Self {
         ProcessAttrs {
-            guid: find_value(pairs, "proc_guid").unwrap_or_default().to_string(),
-            info_version: find_value(pairs, "proc_info_version").unwrap_or_default().to_string(),
-            file_version: find_value(pairs, "proc_file_version").unwrap_or_default().to_string(),
+            guid: find_value(pairs, "proc_guid")
+                .unwrap_or_default()
+                .to_string(),
+            info_version: find_value(pairs, "proc_info_version")
+                .unwrap_or_default()
+                .to_string(),
+            file_version: find_value(pairs, "proc_file_version")
+                .unwrap_or_default()
+                .to_string(),
             process_id_hash: find_value(pairs, "proc_id_hash").map(|s| s.to_string()),
             default_commands: find_value(pairs, "proc_default_commands").map(|s| s.to_string()),
             git_commit: find_value(pairs, "proc_git_commit").map(|s| s.to_string()),
@@ -112,7 +116,6 @@ impl ProcessAttrs {
     }
 }
 
-
 //&h_logical_cores=2
 //&h_mac_digest=RZT9gciMsRVasfJTcA
 // &h_os64=1
@@ -121,8 +124,8 @@ impl ProcessAttrs {
 // &h_fixed_drives_count=2
 // &h_fixed_drive=NTFS%2C111%2C268
 // &h_fixed_drive=NTFS*%2C168%2C274
-#[derive(Debug,Clone)]
-struct HardwareAttrs{
+#[derive(Debug, Clone)]
+struct HardwareAttrs {
     logical_cores: i32,
     mac_digest: String,
     os64bit: bool,
@@ -138,7 +141,8 @@ impl HardwareAttrs {
     fn parse(pairs: &[(&str, &str)]) -> Self {
         // A function to parse and decode drives from their key identifier
         let parse_drives = |key: &str| -> Vec<Drive> {
-            pairs.iter()
+            pairs
+                .iter()
                 .filter_map(|&(k, v)| {
                     if k == key {
                         // Decode each drive string exactly once before attempting to parse
@@ -152,7 +156,9 @@ impl HardwareAttrs {
 
         HardwareAttrs {
             logical_cores: find_and_parse(pairs, "h_logical_cores").unwrap_or(0),
-            mac_digest: find_value(pairs, "h_mac_digest").unwrap_or_default().to_string(),
+            mac_digest: find_value(pairs, "h_mac_digest")
+                .unwrap_or_default()
+                .to_string(),
             os64bit: parse_bool(pairs, "h_os64").unwrap_or(false),
             network_drive_count: find_and_parse(pairs, "h_network_drives_count").unwrap_or(0),
             fixed_drive_count: find_and_parse(pairs, "h_fixed_drives_count").unwrap_or(0),
@@ -164,21 +170,22 @@ impl HardwareAttrs {
     }
 }
 
-
 //Parse from comma delimited format filesystem(*appdrive),availgb,totalgb.
 //Example value: "NTFS*%2C168%2C274"
-#[derive(Debug,Clone)]
-struct Drive{
+#[derive(Debug, Clone)]
+struct Drive {
     app_drive: bool, // if the filesystem ends with *, trim it and set this true
     filesystem: String,
     available_gb: i32,
-    total_gb: i32
+    total_gb: i32,
 }
 impl Drive {
     fn parse(decoded_input: &str) -> Option<Self> {
         // Split the decoded string by ',' to extract the parts
         let parts: Vec<&str> = decoded_input.split(',').collect();
-        if parts.len() != 3 { return None; }
+        if parts.len() != 3 {
+            return None;
+        }
 
         // Extract and process the filesystem part
         let filesystem_info = parts[0];
@@ -202,10 +209,8 @@ impl Drive {
     }
 }
 
-
-
-#[derive(Debug,Clone)]
-struct PipelineStats{
+#[derive(Debug, Clone)]
+struct PipelineStats {
     // defaults to zero
     source_file_ext_tiff: i32,
     source_file_ext_tif: i32,
@@ -230,9 +235,9 @@ impl PipelineStats {
         }
     }
 }
-#[derive(Debug,Clone)]
-pub(crate) struct Report{
-    ip_str: String,
+#[derive(Debug, Clone)]
+pub(crate) struct Report {
+    pub(crate) ip_str: String,
     //&manager_id
     manager_id: String,
     logged_at: DateTime<Utc>,
@@ -260,8 +265,8 @@ pub(crate) struct Report{
     enabled_cache: Option<String>,
     pipeline: PipelineStats,
     hardware: HardwareAttrs,
-    process: ProcessAttrs,
-    jobs_completed_total: Option<u64>,
+    pub(crate) process: ProcessAttrs,
+    pub(crate) jobs_completed_total: Option<u64>,
     jobs_completed: Option<ThroughputStat>,
     encoded_pixels: Option<ThroughputStat>,
     decoded_pixels: Option<ThroughputStat>,
@@ -273,7 +278,6 @@ pub(crate) struct Report{
     blob_read_times: Option<PercentileStat>,
 }
 
-
 // if (streamCache != null) query.AddString("stream_cache", streamCache.GetType().Name);
 // query.Add("map_web_root", options.MapWebRoot);
 // query.Add("use_presets_exclusively", options.UsePresetsExclusively);
@@ -281,7 +285,6 @@ pub(crate) struct Report{
 // query.Add("default_cache_control", options.DefaultCacheControlString);
 
 impl Report {
-
     pub fn parse(query: &str, log_time: DateTime<Utc>, ip: &str) -> Self {
         let pairs = parse_query_string(query);
 
@@ -294,13 +297,30 @@ impl Report {
             report_truncated: parse_bool(&pairs, "truncated").unwrap_or(false),
             total_heartbeats: find_and_parse(&pairs, "total_heartbeats").unwrap_or(0),
             first_heartbeat: find_and_parse(&pairs, "first_heartbeat")
-                .map(|v| Utc.timestamp_opt(v, 0).latest()).flatten(),
+                .map(|v| Utc.timestamp_opt(v, 0).latest())
+                .flatten(),
             is_imageflow: parse_bool(&pairs, "imageflow").unwrap_or(false),
             plugins: find_repeated_values_decode(&pairs, "p"),
-            query_keys: parse_comma_delimited(find_value(&pairs, "query_keys").unwrap_or_default().as_str()),
-            extra_job_query_keys: parse_comma_delimited(find_value(&pairs, "extra_job_query_keys").unwrap_or_default().as_str()),
-            image_domains: parse_comma_delimited(find_value(&pairs, "image_domains").unwrap_or_default().as_str()),
-            page_domains: parse_comma_delimited(find_value(&pairs, "page_domains").unwrap_or_default().as_str()),
+            query_keys: parse_comma_delimited(
+                find_value(&pairs, "query_keys")
+                    .unwrap_or_default()
+                    .as_str(),
+            ),
+            extra_job_query_keys: parse_comma_delimited(
+                find_value(&pairs, "extra_job_query_keys")
+                    .unwrap_or_default()
+                    .as_str(),
+            ),
+            image_domains: parse_comma_delimited(
+                find_value(&pairs, "image_domains")
+                    .unwrap_or_default()
+                    .as_str(),
+            ),
+            page_domains: parse_comma_delimited(
+                find_value(&pairs, "page_domains")
+                    .unwrap_or_default()
+                    .as_str(),
+            ),
             enabled_cache: find_value(&pairs, "enabled_cache"),
             hardware: HardwareAttrs::parse(&pairs),
             process: ProcessAttrs::parse(&pairs),
@@ -320,7 +340,7 @@ impl Report {
     }
 }
 
-#[derive(Debug,Clone)]
+#[derive(Debug, Clone)]
 pub struct Summary {
     image_domains: Vec<String>,
     page_domains: Vec<String>,
@@ -335,12 +355,12 @@ pub struct Summary {
     decoded_pixels_total: u64,
     info_versions: Vec<String>,
     default_command_sets: Vec<String>,
-    last_full_report_from: Option<DateTime<Utc>>
+    last_full_report_from: Option<DateTime<Utc>>,
 }
 
 impl Summary {
     pub(crate) fn default() -> Summary {
-        Summary{
+        Summary {
             image_domains: vec![],
             page_domains: vec![],
             reporter_ips: vec![],
@@ -353,7 +373,7 @@ impl Summary {
             decoded_pixels_total: 0,
             info_versions: vec![],
             default_command_sets: vec![],
-            last_full_report_from: None
+            last_full_report_from: None,
         }
     }
 }
@@ -368,20 +388,37 @@ impl Summary {
 
     pub(crate) fn add_from(&mut self, r: &Report, full_report: bool) {
         if full_report {
-            self.last_full_report_from
-                = Some(self.last_full_report_from.map(|v| v.max(r.logged_at))
-                .unwrap_or(r.logged_at));
+            self.last_full_report_from = Some(
+                self.last_full_report_from
+                    .map(|v| v.max(r.logged_at))
+                    .unwrap_or(r.logged_at),
+            );
         }
         // Utilize Summary::add_unique for adding unique items
-        r.image_domains.iter().for_each(|d| Summary::add_unique(&mut self.image_domains, d.clone()));
-        r.page_domains.iter().for_each(|d| Summary::add_unique(&mut self.page_domains, d.clone()));
+        r.image_domains
+            .iter()
+            .for_each(|d| Summary::add_unique(&mut self.image_domains, d.clone()));
+        r.page_domains
+            .iter()
+            .for_each(|d| Summary::add_unique(&mut self.page_domains, d.clone()));
         Summary::add_unique(&mut self.reporter_ips, r.ip_str.clone());
-        r.query_keys.iter().for_each(|k| Summary::add_unique(&mut self.query_keys, k.clone()));
-        r.extra_job_query_keys.iter().for_each(|k| Summary::add_unique(&mut self.extra_job_query_keys, k.clone()));
-        r.plugins.iter().for_each(|p| Summary::add_unique(&mut self.plugins, p.clone()));
+        r.query_keys
+            .iter()
+            .for_each(|k| Summary::add_unique(&mut self.query_keys, k.clone()));
+        r.extra_job_query_keys
+            .iter()
+            .for_each(|k| Summary::add_unique(&mut self.extra_job_query_keys, k.clone()));
+        r.plugins
+            .iter()
+            .for_each(|p| Summary::add_unique(&mut self.plugins, p.clone()));
 
         // Format and add unique machine information
-        let machine_info = format!("[cores={}][{}]{})", r.hardware.logical_cores, if r.hardware.os64bit { "x64" } else { "x86" }, r.hardware.mac_digest);
+        let machine_info = format!(
+            "[cores={}][{}]{})",
+            r.hardware.logical_cores,
+            if r.hardware.os64bit { "x64" } else { "x86" },
+            r.hardware.mac_digest
+        );
         Summary::add_unique(&mut self.machines, machine_info);
         if full_report {
             // Utilize sum_values for aggregating totals
@@ -404,7 +441,6 @@ impl Summary {
     }
 }
 
-
 fn url_decode(input: &str) -> String {
     percent_encoding::percent_decode(input.as_bytes())
         .decode_utf8_lossy()
@@ -412,23 +448,35 @@ fn url_decode(input: &str) -> String {
 }
 // Finds the first value for the given key and attempts to parse it into the desired type.
 fn find_and_parse<T: std::str::FromStr>(pairs: &[(&str, &str)], key: &str) -> Option<T> {
-    pairs.iter()
+    pairs
+        .iter()
         .find(|&&(k, _)| k == key)
         .and_then(|&(_, v)| v.parse().ok())
 }
-fn find_and_parse_2<T: std::str::FromStr>(pairs: &[(&str, &str)], key_part_a: &str, key_part_b: &str) -> Option<T> {
-    pairs.iter()
-        .find(|&&(k, _)| k.starts_with(key_part_a) && k.ends_with(key_part_b) && k.len() == key_part_a.len() + key_part_b.len())
+fn find_and_parse_2<T: std::str::FromStr>(
+    pairs: &[(&str, &str)],
+    key_part_a: &str,
+    key_part_b: &str,
+) -> Option<T> {
+    pairs
+        .iter()
+        .find(|&&(k, _)| {
+            k.starts_with(key_part_a)
+                && k.ends_with(key_part_b)
+                && k.len() == key_part_a.len() + key_part_b.len()
+        })
         .and_then(|&(_, v)| v.parse().ok())
 }
 
 fn find_value<'a>(pairs: &'a [(&str, &str)], key: &'a str) -> Option<String> {
-    pairs.iter()
+    pairs
+        .iter()
         .find(|&&(k, _)| k == key)
         .map(|&(_, v)| v.to_string())
 }
 fn find_repeated_values_decode<'a>(pairs: &'a [(&str, &str)], key: &'a str) -> Vec<String> {
-    pairs.iter()
+    pairs
+        .iter()
         .filter(|&&(k, _)| k == key)
         .map(|&(_, v)| url_decode(v))
         .collect()
@@ -441,14 +489,20 @@ fn parse_bool(pairs: &[(&str, &str)], key: &str) -> Option<bool> {
 
 // Parses a delimited string into a Vec of a specified type. Caller should already have url decoded
 fn parse_delimited<T: std::str::FromStr>(input: &str, delimiter: char) -> Vec<T> {
-    input.split(delimiter)
+    input
+        .split(delimiter)
         .filter_map(|item| item.parse().ok())
         .collect()
 }
 
 fn parse_query_string(input: &str) -> Vec<(&str, &str)> {
-    let without_q = if input.starts_with('?') { &input[1..]} else { input };
-    without_q.split('&')
+    let without_q = if input.starts_with('?') {
+        &input[1..]
+    } else {
+        input
+    };
+    without_q
+        .split('&')
         .filter_map(|part| {
             let mut parts = part.splitn(2, '=');
             if let Some(key) = parts.next() {
@@ -463,7 +517,5 @@ fn parse_query_string(input: &str) -> Vec<(&str, &str)> {
 
 fn parse_comma_delimited(input: &str) -> Vec<String> {
     let decoded = url_decode(input);
-    decoded.split(',')
-        .map(|s| s.to_string())
-        .collect()
+    decoded.split(',').map(|s| s.to_string()).collect()
 }
