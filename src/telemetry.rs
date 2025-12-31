@@ -125,9 +125,9 @@ impl ProcessAttrs {
 // &h_fixed_drive=NTFS%2C111%2C268
 // &h_fixed_drive=NTFS*%2C168%2C274
 #[derive(Debug, Clone)]
-struct HardwareAttrs {
-    logical_cores: i32,
-    mac_digest: String,
+pub(crate) struct HardwareAttrs {
+    pub(crate) logical_cores: i32,
+    pub(crate) mac_digest: String,
     os64bit: bool,
     network_drive_count: i32,
     fixed_drive_count: i32,
@@ -240,7 +240,7 @@ pub(crate) struct Report {
     pub(crate) ip_str: String,
     //&manager_id
     manager_id: String,
-    logged_at: DateTime<Utc>,
+    pub(crate) logged_at: DateTime<Utc>,
     //&reporting_version=4/100
     reporting_version: i32,
     //&truncated=true
@@ -250,7 +250,7 @@ pub(crate) struct Report {
     //&first_heartbeat=(seconds since jan 1 1970)
     first_heartbeat: Option<DateTime<Utc>>,
     //&imageflow=1 (default 0)
-    is_imageflow: bool,
+    pub(crate) is_imageflow: bool,
     //&p=v1&p=v2 (duplicated)
     plugins: Vec<String>,
     //&query_keys=a,b,c (comma delimited)
@@ -258,13 +258,13 @@ pub(crate) struct Report {
     //&extra_job_query_keys=a,b,c
     extra_job_query_keys: Vec<String>,
     //&image_domains=v,s,c
-    image_domains: Vec<String>,
+    pub(crate) image_domains: Vec<String>,
     //&page_domains=v,s,c
-    page_domains: Vec<String>,
+    pub(crate) page_domains: Vec<String>,
     //&enabled_cache=x
     enabled_cache: Option<String>,
     pipeline: PipelineStats,
-    hardware: HardwareAttrs,
+    pub(crate) hardware: HardwareAttrs,
     pub(crate) process: ProcessAttrs,
     pub(crate) jobs_completed_total: Option<u64>,
     jobs_completed: Option<ThroughputStat>,
@@ -518,4 +518,311 @@ fn parse_query_string(input: &str) -> Vec<(&str, &str)> {
 fn parse_comma_delimited(input: &str) -> Vec<String> {
     let decoded = url_decode(input);
     decoded.split(',').map(|s| s.to_string()).collect()
+}
+
+// ============================================================================
+// Enhanced Analytics Structures
+// ============================================================================
+
+use serde::Serialize;
+use std::collections::{BTreeMap, HashMap, HashSet};
+
+/// Product type detection based on is_imageflow flag and version string
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum ProductType {
+    Imageflow,
+    ImageResizer,
+    Unknown,
+}
+
+impl ProductType {
+    pub fn from_report(report: &Report) -> Self {
+        if report.is_imageflow {
+            return ProductType::Imageflow;
+        }
+        let version = &report.process.info_version;
+        if version.starts_with("0.") {
+            ProductType::Imageflow
+        } else if version.starts_with("4.") || version.starts_with("5.") {
+            ProductType::ImageResizer
+        } else {
+            ProductType::Unknown
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ProductType::Imageflow => "imageflow",
+            ProductType::ImageResizer => "imageresizer",
+            ProductType::Unknown => "unknown",
+        }
+    }
+}
+
+/// Weekly metrics for time-series analysis
+#[derive(Debug, Clone, Default)]
+pub struct WeeklyMetrics {
+    pub week_key: String,
+    pub jobs_completed: u64,
+    pub unique_machines: HashSet<String>,
+    pub unique_ips: HashSet<String>,
+    pub report_count: u64,
+    pub first_report: Option<DateTime<Utc>>,
+    pub last_report: Option<DateTime<Utc>>,
+}
+
+/// Daily machine stats for concurrency tracking
+#[derive(Debug, Clone, Default)]
+pub struct DailyMachineStats {
+    pub date_key: String,
+    pub unique_machines: HashSet<String>,
+    pub jobs_completed: u64,
+}
+
+/// Domain usage statistics
+#[derive(Debug, Clone, Default)]
+pub struct DomainStats {
+    pub domain: String,
+    pub job_count: u64,
+    pub first_seen: Option<DateTime<Utc>>,
+    pub last_seen: Option<DateTime<Utc>>,
+    pub associated_ips: HashSet<String>,
+    pub uses_imageflow: bool,
+    pub uses_imageresizer: bool,
+}
+
+/// Trend direction for time-series analysis
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum TrendDirection {
+    Rising,
+    Declining,
+    Steady,
+    Insufficient,
+}
+
+impl TrendDirection {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            TrendDirection::Rising => "rising",
+            TrendDirection::Declining => "declining",
+            TrendDirection::Steady => "steady",
+            TrendDirection::Insufficient => "insufficient_data",
+        }
+    }
+}
+
+/// Enhanced summary with historical tracking
+#[derive(Debug, Clone)]
+pub struct EnhancedSummary {
+    pub base: Summary,
+    pub weekly_metrics: BTreeMap<String, WeeklyMetrics>,
+    pub daily_machines: BTreeMap<String, DailyMachineStats>,
+    pub imageflow_jobs: u64,
+    pub imageresizer_jobs: u64,
+    pub imageflow_machines: HashSet<String>,
+    pub imageresizer_machines: HashSet<String>,
+    pub domain_stats: HashMap<String, DomainStats>,
+    pub job_trend: TrendDirection,
+    pub machine_trend: TrendDirection,
+    pub first_activity: Option<DateTime<Utc>>,
+    pub last_activity: Option<DateTime<Utc>>,
+}
+
+impl Default for EnhancedSummary {
+    fn default() -> Self {
+        EnhancedSummary {
+            base: Summary::default(),
+            weekly_metrics: BTreeMap::new(),
+            daily_machines: BTreeMap::new(),
+            imageflow_jobs: 0,
+            imageresizer_jobs: 0,
+            imageflow_machines: HashSet::new(),
+            imageresizer_machines: HashSet::new(),
+            domain_stats: HashMap::new(),
+            job_trend: TrendDirection::Insufficient,
+            machine_trend: TrendDirection::Insufficient,
+            first_activity: None,
+            last_activity: None,
+        }
+    }
+}
+
+impl EnhancedSummary {
+    pub fn add_from_enhanced(&mut self, report: &Report, full_report: bool) {
+        // Call base implementation
+        self.base.add_from(report, full_report);
+
+        let week_key = crate::util::week_key_from_datetime(report.logged_at);
+        let date_key = crate::util::date_key_from_datetime(report.logged_at);
+        let mac_digest = &report.hardware.mac_digest;
+        let product = ProductType::from_report(report);
+
+        // Track activity window
+        self.first_activity = Some(
+            self.first_activity
+                .map(|f| f.min(report.logged_at))
+                .unwrap_or(report.logged_at),
+        );
+        self.last_activity = Some(
+            self.last_activity
+                .map(|l| l.max(report.logged_at))
+                .unwrap_or(report.logged_at),
+        );
+
+        // Update weekly metrics
+        let weekly = self.weekly_metrics.entry(week_key.clone()).or_insert_with(|| {
+            WeeklyMetrics {
+                week_key: week_key.clone(),
+                ..Default::default()
+            }
+        });
+
+        if full_report {
+            if let Some(jobs) = report.jobs_completed_total {
+                weekly.jobs_completed += jobs;
+            }
+        }
+        weekly.unique_machines.insert(mac_digest.clone());
+        weekly.unique_ips.insert(report.ip_str.clone());
+        weekly.report_count += 1;
+        weekly.first_report = Some(
+            weekly
+                .first_report
+                .map(|f| f.min(report.logged_at))
+                .unwrap_or(report.logged_at),
+        );
+        weekly.last_report = Some(
+            weekly
+                .last_report
+                .map(|l| l.max(report.logged_at))
+                .unwrap_or(report.logged_at),
+        );
+
+        // Update daily machine stats
+        let daily = self.daily_machines.entry(date_key.clone()).or_insert_with(|| {
+            DailyMachineStats {
+                date_key: date_key.clone(),
+                ..Default::default()
+            }
+        });
+        daily.unique_machines.insert(mac_digest.clone());
+        if full_report {
+            if let Some(jobs) = report.jobs_completed_total {
+                daily.jobs_completed += jobs;
+            }
+        }
+
+        // Product-specific tracking
+        if full_report {
+            if let Some(jobs) = report.jobs_completed_total {
+                match product {
+                    ProductType::Imageflow => {
+                        self.imageflow_jobs += jobs;
+                        self.imageflow_machines.insert(mac_digest.clone());
+                    }
+                    ProductType::ImageResizer => {
+                        self.imageresizer_jobs += jobs;
+                        self.imageresizer_machines.insert(mac_digest.clone());
+                    }
+                    ProductType::Unknown => {}
+                }
+            }
+        }
+
+        // Domain tracking
+        for domain in &report.image_domains {
+            if domain.is_empty() {
+                continue;
+            }
+            let stats = self.domain_stats.entry(domain.clone()).or_insert_with(|| {
+                DomainStats {
+                    domain: domain.clone(),
+                    ..Default::default()
+                }
+            });
+            if full_report {
+                if let Some(jobs) = report.jobs_completed_total {
+                    stats.job_count += jobs;
+                }
+            }
+            stats.first_seen = Some(
+                stats
+                    .first_seen
+                    .map(|f| f.min(report.logged_at))
+                    .unwrap_or(report.logged_at),
+            );
+            stats.last_seen = Some(
+                stats
+                    .last_seen
+                    .map(|l| l.max(report.logged_at))
+                    .unwrap_or(report.logged_at),
+            );
+            stats.associated_ips.insert(report.ip_str.clone());
+            match product {
+                ProductType::Imageflow => stats.uses_imageflow = true,
+                ProductType::ImageResizer => stats.uses_imageresizer = true,
+                ProductType::Unknown => {}
+            }
+        }
+    }
+
+    /// Compute trends from weekly data (call before serialization)
+    pub fn compute_trends(&mut self) {
+        let weeks: Vec<_> = self.weekly_metrics.values().collect();
+
+        if weeks.len() < 3 {
+            self.job_trend = TrendDirection::Insufficient;
+            self.machine_trend = TrendDirection::Insufficient;
+            return;
+        }
+
+        // Get last 3 weeks (BTreeMap is sorted)
+        let recent: Vec<_> = weeks.iter().rev().take(3).collect();
+
+        // Job trend (compare oldest to newest of the 3)
+        let job_values: Vec<u64> = recent.iter().rev().map(|w| w.jobs_completed).collect();
+        self.job_trend = Self::calculate_trend(&job_values);
+
+        // Machine trend
+        let machine_values: Vec<u64> = recent
+            .iter()
+            .rev()
+            .map(|w| w.unique_machines.len() as u64)
+            .collect();
+        self.machine_trend = Self::calculate_trend(&machine_values);
+    }
+
+    fn calculate_trend(values: &[u64]) -> TrendDirection {
+        if values.len() < 2 {
+            return TrendDirection::Insufficient;
+        }
+        let first = values[0] as f64;
+        let last = values[values.len() - 1] as f64;
+        if first == 0.0 && last == 0.0 {
+            return TrendDirection::Steady;
+        }
+        let change_pct = if first > 0.0 {
+            (last - first) / first * 100.0
+        } else {
+            100.0 // From zero to something = rising
+        };
+
+        if change_pct > 10.0 {
+            TrendDirection::Rising
+        } else if change_pct < -10.0 {
+            TrendDirection::Declining
+        } else {
+            TrendDirection::Steady
+        }
+    }
+
+    /// Check if this license uses Imageflow
+    pub fn uses_imageflow(&self) -> bool {
+        self.imageflow_jobs > 0 || !self.imageflow_machines.is_empty()
+    }
+
+    /// Check if this license uses ImageResizer
+    pub fn uses_imageresizer(&self) -> bool {
+        self.imageresizer_jobs > 0 || !self.imageresizer_machines.is_empty()
+    }
 }

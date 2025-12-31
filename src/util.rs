@@ -1,4 +1,4 @@
-use chrono::{DateTime, Datelike, TimeZone, Utc};
+use chrono::{DateTime, Datelike, IsoWeek, TimeZone, Utc};
 use std::ffi::OsString;
 use std::fs::ReadDir;
 use std::path::{Path, PathBuf};
@@ -56,6 +56,18 @@ pub fn first_and_last_millisecond_of_day<Tz: TimeZone>(
         .unwrap();
 
     (first_millisecond, last_millisecond)
+}
+
+/// Returns ISO week key in format "2024-W03"
+pub fn week_key_from_datetime<Tz: TimeZone>(datetime: DateTime<Tz>) -> String {
+    let utc = datetime.with_timezone(&Utc);
+    format!("{}-W{:02}", utc.iso_week().year(), utc.iso_week().week())
+}
+
+/// Returns date key in format "2024-01-15"
+pub fn date_key_from_datetime<Tz: TimeZone>(datetime: DateTime<Tz>) -> String {
+    let utc = datetime.with_timezone(&Utc);
+    utc.format("%Y-%m-%d").to_string()
 }
 
 pub fn expand_input_filenames_recursive(files_and_dirs: Vec<PathBuf>) -> Vec<PathBuf> {
