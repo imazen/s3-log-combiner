@@ -62,6 +62,7 @@ Run summarize command and verify output
 - Global Imageflow domain aggregation (all domains using Imageflow across all licenses)
 - 52 weeks + 90 days of history
 - ~350MB RAM budget acceptable
+- **URGENT: Query keys & plugins by version** - Track which querystring commands (query_keys, extra_job_query_keys) and plugins are used with each product version, to know what needs compatibility maintenance
 
 ## Output Files to Generate
 | File | Content |
@@ -70,8 +71,27 @@ Run summarize command and verify output
 | `report.txt` | Existing text (keep) |
 | `imageflow_report.txt` | Global Imageflow + all domains |
 | `weekly_breakdown.txt` | Week-by-week activity |
+| `compatibility_report.txt` | **NEW** Query keys & plugins by product version |
 | `low_usage_report.txt` | Keep existing |
 | `violation_report.txt` | Keep existing |
+
+## Compatibility Report Structure
+Track what needs maintenance by showing query_keys, extra_job_query_keys, and plugins grouped by:
+```
+Imageflow 0.9.0:
+  Query keys: width, height, mode, format, quality, ...
+  Plugins: none (Imageflow doesn't use plugins)
+  Job count: 1,234,567
+  License count: 45
+
+ImageResizer 4.2.8:
+  Query keys: width, height, maxwidth, maxheight, mode, ...
+  Extra job query keys: ...
+  Plugins: DiskCache, PrettyGifs, WebP, ...
+  Job count: 2,345,678
+  License count: 89
+```
+This shows which features are actively used per version to guide deprecation decisions.
 
 ## Spec File
 See `SPEC-enhanced-analytics.md` for full specification including JSON schema.

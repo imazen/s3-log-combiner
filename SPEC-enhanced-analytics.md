@@ -74,6 +74,19 @@ pub enum TrendDirection {
 }
 ```
 
+### VersionStats (for compatibility tracking)
+```rust
+pub struct VersionStats {
+    pub product: ProductType,
+    pub version: String,
+    pub query_keys: HashSet<String>,
+    pub extra_job_query_keys: HashSet<String>,
+    pub plugins: HashSet<String>,
+    pub job_count: u64,
+    pub license_ids: HashSet<String>,
+}
+```
+
 ### EnhancedSummary
 ```rust
 pub struct EnhancedSummary {
@@ -155,7 +168,27 @@ pub struct EnhancedSummary {
     "total_unique_machines": 500,
     "imageflow_jobs": 4000000,
     "imageresizer_jobs": 1000000
-  }
+  },
+  "version_compatibility": [
+    {
+      "product": "imageflow",
+      "version": "0.9.0",
+      "query_keys": ["width", "height", "mode", "format", "quality"],
+      "extra_job_query_keys": [],
+      "plugins": [],
+      "job_count": 1234567,
+      "license_count": 45
+    },
+    {
+      "product": "imageresizer",
+      "version": "4.2.8",
+      "query_keys": ["width", "height", "maxwidth", "maxheight", "mode", "crop"],
+      "extra_job_query_keys": ["preset"],
+      "plugins": ["DiskCache", "PrettyGifs", "WebP", "AnimatedGifs"],
+      "job_count": 2345678,
+      "license_count": 89
+    }
+  ]
 }
 ```
 
@@ -167,6 +200,7 @@ pub struct EnhancedSummary {
 | `report.txt` | Existing text summary (unchanged) |
 | `imageflow_report.txt` | Global Imageflow stats + ALL domains using Imageflow |
 | `weekly_breakdown.txt` | Week-by-week activity across all licenses |
+| `compatibility_report.txt` | Query keys & plugins by product version (for maintenance planning) |
 | `low_usage_report.txt` | Existing (unchanged) |
 | `violation_report.txt` | Existing (unchanged) |
 
