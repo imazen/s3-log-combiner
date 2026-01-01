@@ -79,13 +79,26 @@ pub enum TrendDirection {
 pub struct VersionStats {
     pub product: ProductType,
     pub version: String,
-    pub query_keys: HashSet<String>,
-    pub extra_job_query_keys: HashSet<String>,
-    pub plugins: HashSet<String>,
+    pub query_keys: HashMap<String, FeatureUsage>,
+    pub extra_job_query_keys: HashMap<String, FeatureUsage>,
+    pub plugins: HashMap<String, FeatureUsage>,
     pub job_count: u64,
     pub license_ids: HashSet<String>,
 }
+
+/// Per-feature usage statistics
+pub struct FeatureUsage {
+    pub feature_name: String,
+    pub job_count: u64,                    // How many jobs used this feature
+    pub license_ids: HashSet<String>,      // Which licenses use it
+    pub license_names: Vec<String>,        // Owner names for easy reading
+}
 ```
+
+This enables identifying:
+- Features used by only 1 license → deprecation candidates
+- Features used by many licenses → critical to maintain
+- Features with high job counts → performance-critical
 
 ### EnhancedSummary
 ```rust
@@ -171,22 +184,29 @@ pub struct EnhancedSummary {
   },
   "version_compatibility": [
     {
-      "product": "imageflow",
-      "version": "0.9.0",
-      "query_keys": ["width", "height", "mode", "format", "quality"],
-      "extra_job_query_keys": [],
-      "plugins": [],
-      "job_count": 1234567,
-      "license_count": 45
-    },
-    {
       "product": "imageresizer",
       "version": "4.2.8",
-      "query_keys": ["width", "height", "maxwidth", "maxheight", "mode", "crop"],
-      "extra_job_query_keys": ["preset"],
-      "plugins": ["DiskCache", "PrettyGifs", "WebP", "AnimatedGifs"],
       "job_count": 2345678,
-      "license_count": 89
+      "license_count": 89,
+      "query_keys": {
+        "width": { "job_count": 2000000, "license_count": 85 },
+        "height": { "job_count": 1900000, "license_count": 82 },
+        "mode": { "job_count": 500000, "license_count": 40 }
+      },
+      "plugins": {
+        "DiskCache": { "job_count": 2300000, "license_count": 88 },
+        "S3Reader2": { "job_count": 5000, "license_count": 1, "licenses": ["Acme Corp"] },
+        "PrettyGifs": { "job_count": 100000, "license_count": 15 }
+      }
+    }
+  ],
+  "feature_deprecation_candidates": [
+    {
+      "feature_type": "plugin",
+      "feature_name": "S3Reader2",
+      "version": "4.2.8",
+      "license_count": 1,
+      "licenses": [{"id": "123456", "owner": "Acme Corp", "job_count": 5000}]
     }
   ]
 }

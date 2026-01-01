@@ -63,6 +63,7 @@ Run summarize command and verify output
 - 52 weeks + 90 days of history
 - ~350MB RAM budget acceptable
 - **URGENT: Query keys & plugins by version** - Track which querystring commands (query_keys, extra_job_query_keys) and plugins are used with each product version, to know what needs compatibility maintenance
+- **URGENT: Per-feature usage stats** - For each plugin/query key, track job_count and which licenses use it. Identify deprecation candidates (features used by only 1 license like S3Reader2) vs critical features (used by many)
 
 ## Output Files to Generate
 | File | Content |
