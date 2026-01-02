@@ -208,7 +208,16 @@ pub struct EnhancedSummary {
       "license_count": 1,
       "licenses": [{"id": "123456", "owner": "Acme Corp", "job_count": 5000}]
     }
-  ]
+  ],
+  "source_format_usage": {
+    "jpg": { "job_count": 5000000, "license_count": 140 },
+    "png": { "job_count": 3000000, "license_count": 120 },
+    "webp": { "job_count": 500000, "license_count": 40 },
+    "gif": { "job_count": 200000, "license_count": 30 },
+    "tiff": { "job_count": 50000, "license_count": 10 },
+    "tif": { "job_count": 10000, "license_count": 5 },
+    "bmp": { "job_count": 5000, "license_count": 3, "licenses": ["OldCorp", "LegacyInc", "RetroSoft"] }
+  }
 }
 ```
 

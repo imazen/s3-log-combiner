@@ -4,6 +4,7 @@ use clap::Parser;
 mod cli;
 mod fetch;
 mod fetcher;
+mod json_report;
 mod license_blob;
 mod log_syntax;
 mod process;

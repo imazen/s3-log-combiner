@@ -1,7 +1,12 @@
 use crate::cli::QueryParseArgs;
+use crate::json_report::{
+    AggregateReport, DailyMachineCount, DomainReport, ErrorTracker, FormatTracker,
+    GlobalImageflowDomainTracker, ImageflowGlobalReport, ImageScalingTracker,
+    InfrastructureTracker, JsonReport, LicenseDistribution, LicenseReport, PerformanceTracker,
+    PlatformTracker, ProductMetrics, VersionTracker, WeeklyData,
+};
 use crate::log_syntax::{S3LogLine, SplitLogColumns};
-use crate::telemetry::Report;
-use crate::telemetry::Summary;
+use crate::telemetry::{EnhancedSummary, ProductType, Report, Summary};
 use async_compression::tokio::bufread;
 use atomic_refcell::AtomicRefCell;
 use chrono::{DateTime, Datelike, TimeZone, Utc};
@@ -98,6 +103,20 @@ impl SplitDataSink {
                 s.add_from(r2, v.last_full_report.is_none());
             }
         });
+        s
+    }
+
+    fn summarize_enhanced(&self) -> EnhancedSummary {
+        let mut s = EnhancedSummary::default();
+        self.uniques.iter().for_each(|(_, v)| {
+            if let Some(ref r1) = v.last_full_report {
+                s.add_from_enhanced(r1, true);
+            }
+            if let Some(ref r2) = v.last_report {
+                s.add_from_enhanced(r2, v.last_full_report.is_none());
+            }
+        });
+        s.compute_trends();
         s
     }
 
@@ -481,6 +500,16 @@ fn process_lines(
     } = config;
     let output_dir = output_directory.unwrap_or_else(|| env::current_dir().unwrap().join("parsed"));
 
+    // Enhanced analytics trackers
+    let mut version_tracker = VersionTracker::new();
+    let mut format_tracker = FormatTracker::new();
+    let mut global_imageflow_tracker = GlobalImageflowDomainTracker::new();
+    let mut infrastructure_tracker = InfrastructureTracker::new();
+    let mut platform_tracker = PlatformTracker::new();
+    let mut performance_tracker = PerformanceTracker::new();
+    let mut error_tracker = ErrorTracker::new();
+    let mut scaling_tracker = ImageScalingTracker::new();
+
     // Phase 1: collection
     // Loop through each line in each file, in reverse order
     // parse to LogLine, to get the time, split_id
@@ -560,6 +589,46 @@ fn process_lines(
             //println!("No split value for {line}");
         }
     }
+
+    println!("Processing complete. Populating analytics trackers...");
+
+    // Populate trackers from collected data (done after fetching completes to avoid borrow conflicts)
+    for (license_id, sinks) in &data {
+        let license_owner: Option<String> = LICENSE_BLOBS
+            .borrow()
+            .get(license_id)
+            .and_then(|b| b.get_str("Owner").map(|s| s.to_string()));
+
+        for unique in sinks.all.uniques.values() {
+            // Process last_full_report if available
+            if let Some(ref report) = unique.last_full_report {
+                version_tracker.add_report(report, license_id, license_owner.as_deref());
+                format_tracker.add_report(report, license_id, license_owner.as_deref());
+                global_imageflow_tracker.add_imageflow_domains(report, license_id);
+                infrastructure_tracker.add_report(report, license_id);
+                platform_tracker.add_report(report, license_id);
+                performance_tracker.add_report(report);
+                error_tracker.add_report(report, license_id);
+                scaling_tracker.add_report(report, license_id);
+            }
+            // Process last_report if it's different from last_full_report
+            if let Some(ref report) = unique.last_report {
+                if unique.last_full_report.is_none() {
+                    version_tracker.add_report(report, license_id, license_owner.as_deref());
+                    format_tracker.add_report(report, license_id, license_owner.as_deref());
+                    global_imageflow_tracker.add_imageflow_domains(report, license_id);
+                    infrastructure_tracker.add_report(report, license_id);
+                    platform_tracker.add_report(report, license_id);
+                    performance_tracker.add_report(report);
+                    error_tracker.add_report(report, license_id);
+                    scaling_tracker.add_report(report, license_id);
+                }
+            }
+        }
+    }
+
+    println!("Generating enhanced reports...");
+
     // filter sinks to those that have image job activity in the 90 days.
     // Create a single file report of
     // license ids, names, unique reporter IPs, software versions, and job counts
@@ -658,8 +727,74 @@ fn process_lines(
     write_tx.blocking_send((output_dir.join("low_usage_report.txt"), low_usage_report));
     write_tx.blocking_send((output_dir.join("violation_report.txt"), violation_report));
 
+    // Generate enhanced reports
+    println!("Generating JSON report...");
+    let json_report = generate_json_report(&data, &version_tracker, &format_tracker, &global_imageflow_tracker);
+    let json_str = serde_json::to_string_pretty(&json_report).unwrap_or_else(|e| {
+        eprintln!("Error serializing JSON report: {}", e);
+        "{}".to_string()
+    });
+    write_tx
+        .blocking_send((output_dir.join("report.json"), json_str))
+        .unwrap();
+
+    println!("Generating Imageflow report...");
+    let imageflow_report = generate_imageflow_report(&data, &global_imageflow_tracker);
+    write_tx
+        .blocking_send((output_dir.join("imageflow_report.txt"), imageflow_report))
+        .unwrap();
+
+    println!("Generating weekly breakdown...");
+    let weekly_report = generate_weekly_breakdown(&data);
+    write_tx
+        .blocking_send((output_dir.join("weekly_breakdown.txt"), weekly_report))
+        .unwrap();
+
+    println!("Generating compatibility report...");
+    let compat_report = generate_compatibility_report(&version_tracker);
+    write_tx
+        .blocking_send((output_dir.join("compatibility_report.txt"), compat_report))
+        .unwrap();
+
+    println!("Generating infrastructure report...");
+    let infra_report = generate_infrastructure_report(&infrastructure_tracker);
+    write_tx
+        .blocking_send((output_dir.join("infrastructure_report.txt"), infra_report))
+        .unwrap();
+
+    println!("Generating platform report...");
+    let platform_report = generate_platform_report(&platform_tracker);
+    write_tx
+        .blocking_send((output_dir.join("platform_report.txt"), platform_report))
+        .unwrap();
+
+    println!("Generating performance report...");
+    let perf_report = generate_performance_report(&performance_tracker);
+    write_tx
+        .blocking_send((output_dir.join("performance_report.txt"), perf_report))
+        .unwrap();
+
+    println!("Generating error report...");
+    let err_report = generate_error_report(&error_tracker);
+    write_tx
+        .blocking_send((output_dir.join("error_report.txt"), err_report))
+        .unwrap();
+
+    println!("Generating image scaling report...");
+    let scaling_report = generate_scaling_report(&scaling_tracker);
+    write_tx
+        .blocking_send((output_dir.join("scaling_report.txt"), scaling_report))
+        .unwrap();
+
+    println!("Generating plugin report...");
+    let plugin_report = generate_plugin_report(&data);
+    write_tx
+        .blocking_send((output_dir.join("plugin_report.txt"), plugin_report))
+        .unwrap();
+
     // Summarization Phase
     write_summaries(&data, &write_tx)?;
+    println!("All enhanced reports generated successfully.");
     Ok(())
 }
 
@@ -692,6 +827,958 @@ fn write_summaries(
     }
     println!("Finished enqueuing {count} summaries");
     Ok(())
+}
+
+// ============================================================================
+// Enhanced Report Generation
+// ============================================================================
+
+fn generate_json_report(
+    data: &HashMap<String, GroupedSinks>,
+    version_tracker: &VersionTracker,
+    format_tracker: &FormatTracker,
+    global_imageflow_tracker: &GlobalImageflowDomainTracker,
+) -> JsonReport {
+    let mut licenses = Vec::new();
+    let mut imageflow_only = 0usize;
+    let mut imageresizer_only = 0usize;
+    let mut both_products = 0usize;
+    let mut inactive = 0usize;
+    let mut total_jobs: u64 = 0;
+    let mut total_imageflow_jobs: u64 = 0;
+    let mut total_imageresizer_jobs: u64 = 0;
+    let mut all_machines: HashSet<String> = HashSet::new();
+    let mut imageflow_licenses = 0usize;
+    let mut imageresizer_licenses = 0usize;
+
+    for (license_id, sinks) in data {
+        let enhanced = sinks.all.summarize_enhanced();
+
+        // Get license info
+        let license_blob = LICENSE_BLOBS.borrow().get(license_id).cloned();
+        let owner = license_blob.as_ref().and_then(|b| b.get_str("Owner").map(|s| s.to_string()));
+        let features = license_blob
+            .as_ref()
+            .map(|b| b.get_features())
+            .unwrap_or_default();
+        let status = license_blob
+            .as_ref()
+            .map(|b| b.status().as_str_lowercase().to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+
+        // Count product usage
+        let uses_if = enhanced.uses_imageflow();
+        let uses_ir = enhanced.uses_imageresizer();
+        if uses_if && uses_ir {
+            both_products += 1;
+        } else if uses_if {
+            imageflow_only += 1;
+        } else if uses_ir {
+            imageresizer_only += 1;
+        } else {
+            inactive += 1;
+        }
+        if uses_if {
+            imageflow_licenses += 1;
+        }
+        if uses_ir {
+            imageresizer_licenses += 1;
+        }
+
+        // Aggregate totals
+        total_jobs += enhanced.base.jobs_completed_total;
+        total_imageflow_jobs += enhanced.imageflow_jobs;
+        total_imageresizer_jobs += enhanced.imageresizer_jobs;
+        all_machines.extend(enhanced.imageflow_machines.iter().cloned());
+        all_machines.extend(enhanced.imageresizer_machines.iter().cloned());
+
+        // Build weekly data
+        let weekly_data: Vec<WeeklyData> = enhanced
+            .weekly_metrics
+            .values()
+            .map(|w| WeeklyData {
+                week: w.week_key.clone(),
+                jobs_completed: w.jobs_completed,
+                unique_machines: w.unique_machines.len(),
+                unique_ips: w.unique_ips.len(),
+                report_count: w.report_count,
+            })
+            .collect();
+
+        // Build daily machine counts
+        let daily_machine_counts: Vec<DailyMachineCount> = enhanced
+            .daily_machines
+            .values()
+            .map(|d| DailyMachineCount {
+                date: d.date_key.clone(),
+                concurrent_machines: d.unique_machines.len(),
+                jobs: d.jobs_completed,
+            })
+            .collect();
+
+        // Build domain reports
+        let domains: Vec<DomainReport> = enhanced
+            .domain_stats
+            .values()
+            .map(|d| DomainReport {
+                domain: d.domain.clone(),
+                job_count: d.job_count,
+                ip_count: d.associated_ips.len(),
+                uses_imageflow: d.uses_imageflow,
+                uses_imageresizer: d.uses_imageresizer,
+            })
+            .collect();
+
+        licenses.push(LicenseReport {
+            license_id: license_id.clone(),
+            license_status: status,
+            owner,
+            features,
+            total_jobs: enhanced.base.jobs_completed_total,
+            unique_machines: enhanced.imageflow_machines.len() + enhanced.imageresizer_machines.len(),
+            unique_ips: enhanced.base.reporter_ips.len(),
+            imageflow: ProductMetrics {
+                jobs: enhanced.imageflow_jobs,
+                machines: enhanced.imageflow_machines.len(),
+            },
+            imageresizer: ProductMetrics {
+                jobs: enhanced.imageresizer_jobs,
+                machines: enhanced.imageresizer_machines.len(),
+            },
+            weekly_data,
+            daily_machine_counts,
+            job_trend: enhanced.job_trend.as_str().to_string(),
+            machine_trend: enhanced.machine_trend.as_str().to_string(),
+            domains,
+            first_activity: enhanced.first_activity.map(|d| d.to_rfc3339()),
+            last_activity: enhanced.last_activity.map(|d| d.to_rfc3339()),
+        });
+    }
+
+    let total = licenses.len();
+    let imageflow_percent = if total > 0 {
+        (imageflow_licenses as f64 / total as f64) * 100.0
+    } else {
+        0.0
+    };
+    let imageresizer_percent = if total > 0 {
+        (imageresizer_licenses as f64 / total as f64) * 100.0
+    } else {
+        0.0
+    };
+
+    JsonReport {
+        generated_at: Utc::now().to_rfc3339(),
+        license_distribution: LicenseDistribution {
+            total,
+            imageflow_only,
+            imageresizer_only,
+            both_products,
+            inactive,
+            imageflow_percent,
+            imageresizer_percent,
+        },
+        licenses,
+        imageflow_global: ImageflowGlobalReport {
+            total_jobs: total_imageflow_jobs,
+            total_machines: all_machines.len(),
+            total_licenses: imageflow_licenses,
+            all_domains: global_imageflow_tracker.to_global_domain_reports(),
+        },
+        aggregate: AggregateReport {
+            total_licenses_active: total - inactive,
+            total_jobs,
+            total_unique_machines: all_machines.len(),
+            imageflow_jobs: total_imageflow_jobs,
+            imageresizer_jobs: total_imageresizer_jobs,
+        },
+        version_compatibility: version_tracker.to_reports(),
+        feature_deprecation_candidates: version_tracker.find_deprecation_candidates(3),
+        source_format_usage: format_tracker.to_usage_map(),
+    }
+}
+
+fn generate_imageflow_report(
+    data: &HashMap<String, GroupedSinks>,
+    global_tracker: &GlobalImageflowDomainTracker,
+) -> String {
+    let mut report = String::new();
+    report.push_str("=== GLOBAL IMAGEFLOW REPORT ===\n\n");
+
+    // Aggregate stats
+    let mut total_jobs: u64 = 0;
+    let mut total_machines: HashSet<String> = HashSet::new();
+    let mut license_count = 0;
+
+    for (_, sinks) in data {
+        let enhanced = sinks.all.summarize_enhanced();
+        if enhanced.uses_imageflow() {
+            total_jobs += enhanced.imageflow_jobs;
+            total_machines.extend(enhanced.imageflow_machines.iter().cloned());
+            license_count += 1;
+        }
+    }
+
+    report.push_str(&format!("Total Imageflow Jobs: {}\n", total_jobs));
+    report.push_str(&format!("Total Unique Machines: {}\n", total_machines.len()));
+    report.push_str(&format!("Total Licenses Using Imageflow: {}\n\n", license_count));
+
+    report.push_str("=== ALL IMAGEFLOW DOMAINS ===\n\n");
+    let domains = global_tracker.to_global_domain_reports();
+    for d in domains {
+        report.push_str(&format!(
+            "{}: {} jobs, {} licenses, {} machines\n",
+            d.domain, d.total_jobs, d.license_count, d.machine_count
+        ));
+        if let Some(first) = &d.first_seen {
+            report.push_str(&format!("  First seen: {}\n", first));
+        }
+        if let Some(last) = &d.last_seen {
+            report.push_str(&format!("  Last seen: {}\n", last));
+        }
+    }
+
+    report
+}
+
+fn generate_weekly_breakdown(data: &HashMap<String, GroupedSinks>) -> String {
+    let mut report = String::new();
+    report.push_str("=== WEEKLY ACTIVITY BREAKDOWN ===\n\n");
+
+    // Aggregate weekly data across all licenses
+    let mut weekly_totals: std::collections::BTreeMap<String, (u64, HashSet<String>, usize)> =
+        std::collections::BTreeMap::new();
+
+    for (license_id, sinks) in data {
+        let enhanced = sinks.all.summarize_enhanced();
+        for (week, metrics) in &enhanced.weekly_metrics {
+            let entry = weekly_totals.entry(week.clone()).or_insert_with(|| {
+                (0, HashSet::new(), 0)
+            });
+            entry.0 += metrics.jobs_completed;
+            entry.1.extend(metrics.unique_machines.iter().cloned());
+            entry.2 += 1; // license count
+        }
+    }
+
+    for (week, (jobs, machines, licenses)) in weekly_totals.iter().rev() {
+        report.push_str(&format!(
+            "{}: {} jobs, {} machines, {} active licenses\n",
+            week, jobs, machines.len(), licenses
+        ));
+    }
+
+    report
+}
+
+fn generate_compatibility_report(version_tracker: &VersionTracker) -> String {
+    use std::collections::HashMap;
+
+    let mut report = String::new();
+    report.push_str("=== COMPATIBILITY REPORT ===\n");
+    report.push_str("Feature usage sorted by number of licenses\n\n");
+
+    // Aggregate features across all versions, separately for each product
+    // Use the raw VersionStats which has actual license IDs
+    struct AggregatedFeature {
+        job_count: u64,
+        license_ids: HashSet<String>,
+        license_names: Vec<String>,
+    }
+
+    let mut imageflow_query_keys: HashMap<String, AggregatedFeature> = HashMap::new();
+    let mut imageflow_extra_keys: HashMap<String, AggregatedFeature> = HashMap::new();
+    let mut imageflow_plugins: HashMap<String, AggregatedFeature> = HashMap::new();
+    let mut imageflow_versions: Vec<(String, u64, usize)> = Vec::new();
+
+    let mut imageresizer_query_keys: HashMap<String, AggregatedFeature> = HashMap::new();
+    let mut imageresizer_extra_keys: HashMap<String, AggregatedFeature> = HashMap::new();
+    let mut imageresizer_plugins: HashMap<String, AggregatedFeature> = HashMap::new();
+    let mut imageresizer_versions: Vec<(String, u64, usize)> = Vec::new();
+
+    // Iterate over raw version stats to get actual license IDs
+    for stats in version_tracker.versions.values() {
+        let is_imageflow = stats.product == "imageflow";
+        let (query_keys, extra_keys, plugins, versions) = if is_imageflow {
+            (&mut imageflow_query_keys, &mut imageflow_extra_keys, &mut imageflow_plugins, &mut imageflow_versions)
+        } else {
+            (&mut imageresizer_query_keys, &mut imageresizer_extra_keys, &mut imageresizer_plugins, &mut imageresizer_versions)
+        };
+
+        versions.push((stats.version.clone(), stats.job_count, stats.license_ids.len()));
+
+        // Aggregate query keys with actual license IDs
+        for (key, feature_stats) in &stats.query_keys {
+            let entry = query_keys.entry(key.clone()).or_insert_with(|| AggregatedFeature {
+                job_count: 0,
+                license_ids: HashSet::new(),
+                license_names: Vec::new(),
+            });
+            entry.job_count += feature_stats.job_count;
+            entry.license_ids.extend(feature_stats.license_ids.iter().cloned());
+            for (id, name) in &feature_stats.license_names {
+                if !entry.license_names.contains(name) {
+                    entry.license_names.push(name.clone());
+                }
+            }
+        }
+
+        // Aggregate extra query keys
+        for (key, feature_stats) in &stats.extra_job_query_keys {
+            let entry = extra_keys.entry(key.clone()).or_insert_with(|| AggregatedFeature {
+                job_count: 0,
+                license_ids: HashSet::new(),
+                license_names: Vec::new(),
+            });
+            entry.job_count += feature_stats.job_count;
+            entry.license_ids.extend(feature_stats.license_ids.iter().cloned());
+            for (id, name) in &feature_stats.license_names {
+                if !entry.license_names.contains(name) {
+                    entry.license_names.push(name.clone());
+                }
+            }
+        }
+
+        // Aggregate plugins
+        for (key, feature_stats) in &stats.plugins {
+            let entry = plugins.entry(key.clone()).or_insert_with(|| AggregatedFeature {
+                job_count: 0,
+                license_ids: HashSet::new(),
+                license_names: Vec::new(),
+            });
+            entry.job_count += feature_stats.job_count;
+            entry.license_ids.extend(feature_stats.license_ids.iter().cloned());
+            for (id, name) in &feature_stats.license_names {
+                if !entry.license_names.contains(name) {
+                    entry.license_names.push(name.clone());
+                }
+            }
+        }
+    }
+
+    // Helper to write a feature table
+    fn write_feature_table(
+        report: &mut String,
+        title: &str,
+        features: &HashMap<String, AggregatedFeature>,
+    ) {
+        if features.is_empty() {
+            return;
+        }
+        report.push_str(&format!("{}\n", title));
+        report.push_str(&format!("{:-<80}\n", ""));
+        report.push_str(&format!("{:<50} {:>12} {:>12}\n", "Feature", "Licenses", "Jobs"));
+        report.push_str(&format!("{:-<80}\n", ""));
+
+        let mut sorted: Vec<_> = features.iter().collect();
+        sorted.sort_by(|a, b| b.1.license_ids.len().cmp(&a.1.license_ids.len()));
+
+        for (name, feat) in sorted {
+            let display_name = if name.len() > 48 { &name[..48] } else { name };
+            let low_usage = if feat.license_ids.len() <= 3 && !feat.license_names.is_empty() {
+                format!(" [{}]", feat.license_names.join(", "))
+            } else {
+                String::new()
+            };
+            report.push_str(&format!(
+                "{:<50} {:>12} {:>12}{}\n",
+                display_name,
+                feat.license_ids.len(),
+                feat.job_count,
+                low_usage
+            ));
+        }
+        report.push('\n');
+    }
+
+    // Helper to write version table
+    fn write_version_table(report: &mut String, title: &str, versions: &[(String, u64, usize)]) {
+        if versions.is_empty() {
+            return;
+        }
+        report.push_str(&format!("{}\n", title));
+        report.push_str(&format!("{:-<80}\n", ""));
+        report.push_str(&format!("{:<50} {:>12} {:>12}\n", "Version", "Licenses", "Jobs"));
+        report.push_str(&format!("{:-<80}\n", ""));
+
+        let mut sorted = versions.to_vec();
+        sorted.sort_by(|a, b| b.2.cmp(&a.2)); // Sort by license count
+
+        for (version, jobs, licenses) in sorted {
+            let display_version = if version.len() > 48 { &version[..48] } else { &version };
+            report.push_str(&format!(
+                "{:<50} {:>12} {:>12}\n",
+                display_version, licenses, jobs
+            ));
+        }
+        report.push('\n');
+    }
+
+    // ================== IMAGEFLOW SECTION ==================
+    report.push_str("================================================================================\n");
+    report.push_str("                              IMAGEFLOW\n");
+    report.push_str("================================================================================\n\n");
+
+    write_feature_table(&mut report, "QUERY KEYS", &imageflow_query_keys);
+    write_feature_table(&mut report, "EXTRA JOB QUERY KEYS", &imageflow_extra_keys);
+    write_feature_table(&mut report, "PLUGINS", &imageflow_plugins);
+    write_version_table(&mut report, "VERSIONS", &imageflow_versions);
+
+    // ================== IMAGERESIZER SECTION ==================
+    report.push_str("================================================================================\n");
+    report.push_str("                              IMAGERESIZER\n");
+    report.push_str("================================================================================\n\n");
+
+    write_feature_table(&mut report, "QUERY KEYS", &imageresizer_query_keys);
+    write_feature_table(&mut report, "EXTRA JOB QUERY KEYS", &imageresizer_extra_keys);
+    write_feature_table(&mut report, "PLUGINS", &imageresizer_plugins);
+    write_version_table(&mut report, "VERSIONS", &imageresizer_versions);
+
+    // Deprecation candidates section
+    let candidates = version_tracker.find_deprecation_candidates(3);
+    if !candidates.is_empty() {
+        report.push_str("================================================================================\n");
+        report.push_str("                    DEPRECATION CANDIDATES (<=3 licenses)\n");
+        report.push_str("================================================================================\n\n");
+
+        for c in &candidates {
+            report.push_str(&format!(
+                "{} '{}' (version {}): {} license(s)\n",
+                c.feature_type, c.feature_name, c.version, c.license_count
+            ));
+            for lic in &c.licenses {
+                report.push_str(&format!("  - {} ({})\n", lic.owner, lic.id));
+            }
+        }
+    }
+
+    report
+}
+
+fn generate_infrastructure_report(tracker: &InfrastructureTracker) -> String {
+    let mut report = String::new();
+    report.push_str("=== INFRASTRUCTURE REPORT ===\n\n");
+
+    // CPU Core Distribution
+    report.push_str("CPU CORE DISTRIBUTION\n");
+    report.push_str(&format!("{:-<60}\n", ""));
+    report.push_str(&format!("{:<20} {:>15} {:>15}\n", "Cores", "Machines", "Licenses"));
+    report.push_str(&format!("{:-<60}\n", ""));
+
+    let mut cores: Vec<_> = tracker.core_distribution.iter().collect();
+    cores.sort_by_key(|(c, _)| *c);
+    for (core_count, (machines, licenses)) in cores {
+        report.push_str(&format!(
+            "{:<20} {:>15} {:>15}\n",
+            core_count, machines, licenses.len()
+        ));
+    }
+    report.push('\n');
+
+    // OS Architecture
+    report.push_str("OS ARCHITECTURE\n");
+    report.push_str(&format!("{:-<60}\n", ""));
+    for (arch, (machines, _)) in &tracker.os_architecture {
+        report.push_str(&format!("{}: {} machines\n", arch, machines));
+    }
+    report.push('\n');
+
+    // Process Architecture
+    report.push_str("PROCESS ARCHITECTURE (32-bit vs 64-bit)\n");
+    report.push_str(&format!("{:-<60}\n", ""));
+    for (arch, (machines, _)) in &tracker.process_architecture {
+        report.push_str(&format!("{}: {} machines\n", arch, machines));
+    }
+    report.push('\n');
+
+    // Filesystem Types
+    report.push_str("FILESYSTEM TYPES\n");
+    report.push_str(&format!("{:-<60}\n", ""));
+    report.push_str(&format!("{:<20} {:>12} {:>15} {:>10}\n", "Filesystem", "Drives", "Total GB", "Licenses"));
+    report.push_str(&format!("{:-<60}\n", ""));
+
+    let mut filesystems: Vec<_> = tracker.filesystem_types.iter().collect();
+    filesystems.sort_by(|a, b| b.1.1.cmp(&a.1.1)); // Sort by total GB
+    for (fs, (drives, total_gb, licenses)) in filesystems {
+        report.push_str(&format!(
+            "{:<20} {:>12} {:>15} {:>10}\n",
+            fs, drives, total_gb, licenses.len()
+        ));
+    }
+    report.push('\n');
+
+    // Storage Summary
+    report.push_str("STORAGE SUMMARY\n");
+    report.push_str(&format!("{:-<60}\n", ""));
+    report.push_str(&format!("Total Storage Tracked: {} GB ({:.1} TB)\n",
+        tracker.total_storage_gb,
+        tracker.total_storage_gb as f64 / 1024.0
+    ));
+    report.push_str(&format!("Total Available: {} GB ({:.1} TB)\n",
+        tracker.total_available_gb,
+        tracker.total_available_gb as f64 / 1024.0
+    ));
+    let utilization = if tracker.total_storage_gb > 0 {
+        100.0 - (tracker.total_available_gb as f64 / tracker.total_storage_gb as f64 * 100.0)
+    } else {
+        0.0
+    };
+    report.push_str(&format!("Average Utilization: {:.1}%\n", utilization));
+    report.push('\n');
+
+    // Storage Tiers
+    report.push_str("STORAGE TIERS (per machine)\n");
+    report.push_str(&format!("{:-<60}\n", ""));
+    let tier_order = ["<100GB", "100-500GB", "500GB-1TB", "1TB+"];
+    for tier in tier_order {
+        let count = tracker.storage_tiers.get(tier).unwrap_or(&0);
+        report.push_str(&format!("{:<20}: {} machines\n", tier, count));
+    }
+
+    report
+}
+
+fn generate_platform_report(tracker: &PlatformTracker) -> String {
+    let mut report = String::new();
+    report.push_str("=== PLATFORM REPORT (.NET/IIS) ===\n\n");
+
+    // .NET Version Distribution
+    if !tracker.dotnet_versions.is_empty() {
+        report.push_str(".NET FRAMEWORK VERSIONS\n");
+        report.push_str(&format!("{:-<60}\n", ""));
+        report.push_str(&format!("{:<40} {:>15}\n", "Version", "Machines"));
+        report.push_str(&format!("{:-<60}\n", ""));
+
+        let mut versions: Vec<_> = tracker.dotnet_versions.iter().collect();
+        versions.sort_by(|a, b| b.1.0.cmp(&a.1.0));
+        for (version, (machines, _)) in versions {
+            report.push_str(&format!("{:<40} {:>15}\n", version, machines));
+        }
+        report.push('\n');
+    }
+
+    // IIS Version Distribution
+    if !tracker.iis_versions.is_empty() {
+        report.push_str("IIS VERSIONS\n");
+        report.push_str(&format!("{:-<60}\n", ""));
+        report.push_str(&format!("{:<40} {:>15}\n", "Version", "Machines"));
+        report.push_str(&format!("{:-<60}\n", ""));
+
+        let mut versions: Vec<_> = tracker.iis_versions.iter().collect();
+        versions.sort_by(|a, b| b.1.0.cmp(&a.1.0));
+        for (version, (machines, _)) in versions {
+            report.push_str(&format!("{:<40} {:>15}\n", version, machines));
+        }
+        report.push('\n');
+    }
+
+    // Pipeline Mode
+    report.push_str("PIPELINE MODE\n");
+    report.push_str(&format!("{:-<60}\n", ""));
+    report.push_str(&format!("Integrated Pipeline: {}\n", tracker.integrated_pipeline_count));
+    report.push_str(&format!("Classic Pipeline: {}\n", tracker.classic_pipeline_count));
+    report.push_str(&format!("Async Module Enabled: {}\n", tracker.async_module_count));
+    report.push('\n');
+
+    // Cache Types
+    if !tracker.cache_types.is_empty() {
+        report.push_str("CACHE TYPES\n");
+        report.push_str(&format!("{:-<60}\n", ""));
+        report.push_str(&format!("{:<40} {:>15}\n", "Cache Type", "Machines"));
+        report.push_str(&format!("{:-<60}\n", ""));
+
+        let mut caches: Vec<_> = tracker.cache_types.iter().collect();
+        caches.sort_by(|a, b| b.1.0.cmp(&a.1.0));
+        for (cache, (machines, _)) in caches {
+            report.push_str(&format!("{:<40} {:>15}\n", cache, machines));
+        }
+        report.push('\n');
+    }
+
+    // Memory Distribution
+    if !tracker.memory_distribution.is_empty() {
+        report.push_str("WORKING SET MEMORY DISTRIBUTION\n");
+        report.push_str(&format!("{:-<60}\n", ""));
+        let tier_order = ["<100MB", "100-500MB", "500MB-1GB", "1-2GB", "2GB+"];
+        for tier in tier_order {
+            let count = tracker.memory_distribution.get(tier).unwrap_or(&0);
+            if *count > 0 {
+                report.push_str(&format!("{:<20}: {} reports\n", tier, count));
+            }
+        }
+        report.push('\n');
+    }
+
+    // Git Commits (Build Versions)
+    if !tracker.git_commits.is_empty() {
+        report.push_str("BUILD VERSIONS (Git Commits)\n");
+        report.push_str(&format!("{:-<60}\n", ""));
+        report.push_str(&format!("{:<45} {:>10}\n", "Commit", "Licenses"));
+        report.push_str(&format!("{:-<60}\n", ""));
+
+        let mut commits: Vec<_> = tracker.git_commits.iter().collect();
+        commits.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+        for (commit, licenses) in commits.iter().take(20) {
+            let display_commit = if commit.len() > 40 { &commit[..40] } else { commit };
+            report.push_str(&format!("{:<45} {:>10}\n", display_commit, licenses.len()));
+        }
+        if tracker.git_commits.len() > 20 {
+            report.push_str(&format!("... and {} more\n", tracker.git_commits.len() - 20));
+        }
+    }
+
+    report
+}
+
+fn generate_performance_report(tracker: &PerformanceTracker) -> String {
+    let mut report = String::new();
+    report.push_str("=== PERFORMANCE REPORT ===\n\n");
+
+    let summary = tracker.summarize();
+
+    // Throughput Stats
+    report.push_str("JOB THROUGHPUT\n");
+    report.push_str(&format!("{:-<60}\n", ""));
+    report.push_str(&format!("Peak Jobs/Second: {}\n", summary.jobs_per_second_max));
+    report.push_str(&format!("Average Jobs/Second: {:.1}\n", summary.jobs_per_second_avg));
+    report.push_str(&format!("Peak Jobs/Minute: {}\n", summary.jobs_per_minute_max));
+    report.push_str(&format!("Peak Jobs/Hour: {}\n", summary.jobs_per_hour_max));
+    report.push('\n');
+
+    // Helper to convert nanoseconds to ms with formatting
+    let ns_to_ms = |ns: u32| -> String {
+        if ns == 0 {
+            "N/A".to_string()
+        } else {
+            format!("{:.2}", ns as f64 / 1_000.0) // Divide by 1000 to get microseconds, not ms
+        }
+    };
+
+    // Latency Stats (values are in nanoseconds * 1000 or microseconds from the telemetry)
+    report.push_str("LATENCY PERCENTILES\n");
+    report.push_str(&format!("{:-<70}\n", ""));
+    report.push_str(&format!("{:<25} {:>10} {:>12} {:>12} {:>10}\n",
+        "Operation", "Samples", "P50 (us)", "P95 (us)", "Max (us)"));
+    report.push_str(&format!("{:-<70}\n", ""));
+
+    // Job times
+    report.push_str(&format!("{:<25} {:>10} {:>12} {:>12} {:>10}\n",
+        "Job Processing",
+        tracker.job_times_p50.len(),
+        ns_to_ms(summary.job_time_p50_median),
+        ns_to_ms(summary.job_time_p95_median),
+        ns_to_ms(summary.job_time_p100_max)
+    ));
+
+    // Encode times
+    report.push_str(&format!("{:<25} {:>10} {:>12} {:>12} {:>10}\n",
+        "Encoding",
+        tracker.encode_times_p50.len(),
+        ns_to_ms(summary.encode_time_p50_median),
+        ns_to_ms(summary.encode_time_p95_median),
+        "N/A"
+    ));
+
+    // Decode times
+    report.push_str(&format!("{:<25} {:>10} {:>12} {:>12} {:>10}\n",
+        "Decoding",
+        tracker.decode_times_p50.len(),
+        ns_to_ms(summary.decode_time_p50_median),
+        ns_to_ms(summary.decode_time_p95_median),
+        "N/A"
+    ));
+
+    // Blob read times
+    report.push_str(&format!("{:<25} {:>10} {:>12} {:>12} {:>10}\n",
+        "Blob Read",
+        tracker.blob_read_times_p50.len(),
+        ns_to_ms(summary.blob_read_time_p50_median),
+        ns_to_ms(summary.blob_read_time_p95_median),
+        "N/A"
+    ));
+    report.push('\n');
+
+    // Detailed timing distribution
+    report.push_str("JOB TIME DISTRIBUTION (microseconds)\n");
+    report.push_str(&format!("{:-<60}\n", ""));
+    if !tracker.job_times_p50.is_empty() {
+        let mut sorted = tracker.job_times_p50.clone();
+        sorted.sort();
+        let len = sorted.len();
+        let p25 = sorted[len / 4];
+        let p50 = sorted[len / 2];
+        let p75 = sorted[len * 3 / 4];
+        let p90 = sorted[len * 9 / 10];
+        let p99 = sorted[len * 99 / 100];
+        let min = sorted[0];
+        let max = sorted[len - 1];
+        report.push_str(&format!("Min: {:.1} us\n", min as f64 / 1000.0));
+        report.push_str(&format!("P25: {:.1} us\n", p25 as f64 / 1000.0));
+        report.push_str(&format!("P50 (Median): {:.1} us\n", p50 as f64 / 1000.0));
+        report.push_str(&format!("P75: {:.1} us\n", p75 as f64 / 1000.0));
+        report.push_str(&format!("P90: {:.1} us\n", p90 as f64 / 1000.0));
+        report.push_str(&format!("P99: {:.1} us\n", p99 as f64 / 1000.0));
+        report.push_str(&format!("Max: {:.1} us\n", max as f64 / 1000.0));
+        report.push_str(&format!("Samples: {}\n", len));
+    } else {
+        report.push_str("No timing data available\n");
+    }
+    report.push('\n');
+
+    // Pixel Throughput
+    report.push_str("PIXEL THROUGHPUT\n");
+    report.push_str(&format!("{:-<60}\n", ""));
+    report.push_str(&format!("Total Encoded Pixels: {} ({:.2} billion)\n",
+        summary.encoded_pixels_total,
+        summary.encoded_pixels_total as f64 / 1_000_000_000.0
+    ));
+    report.push_str(&format!("Total Decoded Pixels: {} ({:.2} billion)\n",
+        summary.decoded_pixels_total,
+        summary.decoded_pixels_total as f64 / 1_000_000_000.0
+    ));
+    report.push_str(&format!("Peak Encoded Pixels/Second: {} ({:.1} MP/s)\n",
+        summary.encoded_pixels_per_sec_peak,
+        summary.encoded_pixels_per_sec_peak as f64 / 1_000_000.0
+    ));
+    report.push_str(&format!("Peak Decoded Pixels/Second: {} ({:.1} MP/s)\n",
+        summary.decoded_pixels_per_sec_peak,
+        summary.decoded_pixels_per_sec_peak as f64 / 1_000_000.0
+    ));
+
+    report
+}
+
+fn generate_scaling_report(tracker: &ImageScalingTracker) -> String {
+    let mut report = String::new();
+    report.push_str("=== SOURCE IMAGE DIMENSION ALIGNMENT REPORT ===\n\n");
+    report.push_str("This report tracks whether source image dimensions are divisible by\n");
+    report.push_str("common alignment values (4, 8, 16). 8x8 alignment is optimal for JPEG\n");
+    report.push_str("compression (DCT blocks), 16x16 for video codecs (macroblocks).\n\n");
+
+    let total = tracker.total_scaling_ops();
+
+    // Summary
+    report.push_str("ALIGNMENT SUMMARY\n");
+    report.push_str(&format!("{:-<60}\n", ""));
+    report.push_str(&format!("Total Alignment Observations: {}\n", total));
+    report.push_str(&format!("Licenses with Alignment Data: {}\n", tracker.license_scaling.len()));
+    report.push('\n');
+
+    // Distribution by alignment
+    report.push_str("ALIGNMENT DISTRIBUTION\n");
+    report.push_str(&format!("{:-<70}\n", ""));
+    report.push_str(&format!("{:<28} {:>15} {:>12}\n", "Alignment Type", "Count", "Percentage"));
+    report.push_str(&format!("{:-<70}\n", ""));
+
+    let dist = tracker.get_distribution();
+    if dist.is_empty() {
+        report.push_str("No alignment data available\n");
+    } else {
+        for (label, count, pct) in dist {
+            report.push_str(&format!("{:<25} {:>15} {:>11.1}%\n", label, count, pct));
+        }
+    }
+    report.push('\n');
+
+    // Detailed breakdown
+    report.push_str("DETAILED BREAKDOWN BY FIELD\n");
+    report.push_str(&format!("{:-<70}\n", ""));
+    report.push_str(&format!("{:<30} {:>15} {:>20}\n", "Bucket", "Count", "Meaning"));
+    report.push_str(&format!("{:-<70}\n", ""));
+
+    let buckets = [
+        ("source_multiple_4x4", tracker.scale_4x4, "w AND h divisible by 4"),
+        ("source_multiple_8x", tracker.scale_8x, "width divisible by 8"),
+        ("source_multiple_x8", tracker.scale_x8, "height divisible by 8"),
+        ("source_multiple_8x8", tracker.scale_8x8, "w AND h %8 (JPEG blocks)"),
+        ("source_multiple_16x16", tracker.scale_16x16, "w AND h %16 (macroblocks)"),
+    ];
+
+    for (name, count, meaning) in buckets {
+        if count > 0 {
+            report.push_str(&format!("{:<30} {:>15} {:>20}\n", name, count, meaning));
+        }
+    }
+    report.push('\n');
+
+    // Top licenses by scaling operations
+    if !tracker.license_scaling.is_empty() {
+        report.push_str("TOP LICENSES BY ALIGNMENT OBSERVATIONS\n");
+        report.push_str(&format!("{:-<60}\n", ""));
+        report.push_str(&format!("{:<25} {:>15}\n", "License ID", "Observations"));
+        report.push_str(&format!("{:-<60}\n", ""));
+
+        let mut sorted: Vec<_> = tracker.license_scaling.iter().collect();
+        sorted.sort_by(|a, b| b.1.cmp(a.1));
+
+        for (id, count) in sorted.iter().take(20) {
+            let display_id = if id.len() > 23 { &id[..23] } else { id };
+            report.push_str(&format!("{:<25} {:>15}\n", display_id, count));
+        }
+
+        if sorted.len() > 20 {
+            report.push_str(&format!("... and {} more\n", sorted.len() - 20));
+        }
+    }
+
+    report
+}
+
+fn generate_error_report(tracker: &ErrorTracker) -> String {
+    let mut report = String::new();
+    report.push_str("=== ERROR REPORT ===\n\n");
+
+    // Overall Stats
+    report.push_str("OVERALL STATISTICS\n");
+    report.push_str(&format!("{:-<60}\n", ""));
+    let total_requests = tracker.total_ok + tracker.total_errors;
+    report.push_str(&format!("Total Requests: {}\n", total_requests));
+    report.push_str(&format!("Successful: {} ({:.2}%)\n",
+        tracker.total_ok,
+        if total_requests > 0 { tracker.total_ok as f64 / total_requests as f64 * 100.0 } else { 0.0 }
+    ));
+    report.push_str(&format!("Errors: {} ({:.2}%)\n",
+        tracker.total_errors,
+        tracker.overall_error_rate()
+    ));
+    report.push_str(&format!("404 Not Found: {}\n", tracker.total_404));
+    report.push('\n');
+
+    // Job-level Stats
+    let total_jobs = tracker.job_ok + tracker.job_errors;
+    if total_jobs > 0 {
+        report.push_str("JOB-LEVEL STATISTICS\n");
+        report.push_str(&format!("{:-<60}\n", ""));
+        report.push_str(&format!("Total Jobs: {}\n", total_jobs));
+        report.push_str(&format!("Successful: {}\n", tracker.job_ok));
+        report.push_str(&format!("Failed: {} ({:.2}%)\n",
+            tracker.job_errors,
+            tracker.job_errors as f64 / total_jobs as f64 * 100.0
+        ));
+        report.push('\n');
+    }
+
+    // Error Breakdown
+    if !tracker.errors_by_type.is_empty() {
+        report.push_str("ERROR BREAKDOWN BY TYPE\n");
+        report.push_str(&format!("{:-<60}\n", ""));
+        report.push_str(&format!("{:<30} {:>15} {:>12}\n", "Error Type", "Count", "% of Errors"));
+        report.push_str(&format!("{:-<60}\n", ""));
+
+        let mut errors: Vec<_> = tracker.errors_by_type.iter().collect();
+        errors.sort_by(|a, b| b.1.cmp(a.1));
+        for (error_type, count) in errors {
+            let pct = if tracker.total_errors > 0 {
+                *count as f64 / tracker.total_errors as f64 * 100.0
+            } else {
+                0.0
+            };
+            report.push_str(&format!("{:<30} {:>15} {:>11.1}%\n", error_type, count, pct));
+        }
+        report.push('\n');
+    }
+
+    // Response Format Distribution
+    if !tracker.response_formats.is_empty() {
+        report.push_str("OUTPUT FORMAT DISTRIBUTION\n");
+        report.push_str(&format!("{:-<60}\n", ""));
+        report.push_str(&format!("{:<20} {:>15} {:>12}\n", "Format", "Count", "Percentage"));
+        report.push_str(&format!("{:-<60}\n", ""));
+
+        let total_response: i64 = tracker.response_formats.values().sum();
+        let mut formats: Vec<_> = tracker.response_formats.iter().collect();
+        formats.sort_by(|a, b| b.1.cmp(a.1));
+        for (format, count) in formats {
+            let pct = if total_response > 0 {
+                *count as f64 / total_response as f64 * 100.0
+            } else {
+                0.0
+            };
+            report.push_str(&format!("{:<20} {:>15} {:>11.1}%\n", format, count, pct));
+        }
+        report.push('\n');
+    }
+
+    // Source Format Distribution
+    if !tracker.source_formats.is_empty() {
+        report.push_str("SOURCE FORMAT DISTRIBUTION\n");
+        report.push_str(&format!("{:-<60}\n", ""));
+        report.push_str(&format!("{:<20} {:>15} {:>12}\n", "Format", "Count", "Percentage"));
+        report.push_str(&format!("{:-<60}\n", ""));
+
+        let total_source: i64 = tracker.source_formats.values().sum();
+        let mut formats: Vec<_> = tracker.source_formats.iter().collect();
+        formats.sort_by(|a, b| b.1.cmp(a.1));
+        for (format, count) in formats {
+            let pct = if total_source > 0 {
+                *count as f64 / total_source as f64 * 100.0
+            } else {
+                0.0
+            };
+            report.push_str(&format!("{:<20} {:>15} {:>11.1}%\n", format, count, pct));
+        }
+        report.push('\n');
+    }
+
+    // High Error Licenses
+    let high_error = tracker.high_error_licenses(5.0);
+    if !high_error.is_empty() {
+        report.push_str("LICENSES WITH HIGH ERROR RATES (>5%)\n");
+        report.push_str(&format!("{:-<80}\n", ""));
+        report.push_str(&format!("{:<20} {:>12} {:>15} {:>15}\n", "License ID", "Error Rate", "OK", "Errors"));
+        report.push_str(&format!("{:-<80}\n", ""));
+
+        for (id, rate, ok, errors) in high_error.iter().take(20) {
+            let display_id = if id.len() > 18 { &id[..18] } else { id };
+            report.push_str(&format!("{:<20} {:>11.1}% {:>15} {:>15}\n", display_id, rate, ok, errors));
+        }
+        if high_error.len() > 20 {
+            report.push_str(&format!("... and {} more\n", high_error.len() - 20));
+        }
+    }
+
+    report
+}
+
+fn generate_plugin_report(data: &HashMap<String, GroupedSinks>) -> String {
+    let mut report = String::new();
+    report.push_str("=== PLUGIN REPORT ===\n\n");
+
+    // Collect plugins with license counts
+    let mut plugin_licenses: HashMap<String, HashSet<String>> = HashMap::new();
+
+    for (license_id, grouped) in data {
+        let summary = grouped.all.summarize();
+        for plugin in &summary.plugins {
+            plugin_licenses
+                .entry(plugin.clone())
+                .or_insert_with(HashSet::new)
+                .insert(license_id.clone());
+        }
+    }
+
+    // Sort by license count descending
+    let mut sorted: Vec<_> = plugin_licenses
+        .iter()
+        .map(|(plugin, licenses)| (plugin.clone(), licenses.len()))
+        .collect();
+    sorted.sort_by(|a, b| b.1.cmp(&a.1));
+
+    report.push_str("PLUGINS BY LICENSE COUNT\n");
+    report.push_str(&format!("{:-<80}\n", ""));
+    report.push_str(&format!("{:>10}  {}\n", "Licenses", "Plugin Name"));
+    report.push_str(&format!("{:-<80}\n", ""));
+
+    if sorted.is_empty() {
+        report.push_str("No plugins recorded\n");
+    } else {
+        for (plugin, count) in &sorted {
+            report.push_str(&format!("{:>10}  {}\n", count, plugin));
+        }
+    }
+
+    report.push_str(&format!("\nTotal unique plugins: {}\n", sorted.len()));
+    report
 }
 
 #[cfg(test)]

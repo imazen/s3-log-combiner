@@ -122,6 +122,12 @@ impl LicenseBlob {
         self.data.get(field).map(|v| v.as_str())
     }
 
+    pub fn get_features(&self) -> Vec<String> {
+        self.get_as_list("Features")
+            .map(|v| v.iter().map(|s| s.to_string()).collect())
+            .unwrap_or_default()
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         // Check for required fields
         let required_fields = vec!["Id", "Owner", "Features"];

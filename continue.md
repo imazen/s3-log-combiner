@@ -1,104 +1,68 @@
-# Continuation Point: Enhanced Analytics Implementation
+# Enhanced Analytics Implementation - COMPLETE
 
 ## Current Branch
-`enhanced-analytics`
+`refactor`
 
-## What's Done
+## Implementation Complete
 
-### 1. Cargo.toml
-- Added `serde` and `serde_json` dependencies
+All enhanced analytics features have been implemented and tested successfully.
 
-### 2. src/util.rs
-- Added `week_key_from_datetime()` - returns "2024-W03" format
-- Added `date_key_from_datetime()` - returns "2024-01-15" format
+## Generated Output Files
 
-### 3. src/telemetry.rs
-- Made `HardwareAttrs` pub(crate) with `mac_digest` and `logical_cores` accessible
-- Made Report fields accessible: `logged_at`, `is_imageflow`, `image_domains`, `page_domains`, `hardware`
-- Added new structures at end of file:
-  - `ProductType` enum (Imageflow, ImageResizer, Unknown) with detection logic
-  - `WeeklyMetrics` struct for weekly time-series
-  - `DailyMachineStats` struct for daily concurrency tracking
-  - `DomainStats` struct for domain usage
-  - `TrendDirection` enum (Rising, Declining, Steady, Insufficient)
-  - `EnhancedSummary` struct with full implementation including:
-    - `add_from_enhanced()` method
-    - `compute_trends()` method
-    - `uses_imageflow()` / `uses_imageresizer()` helpers
+| File | Size | Content |
+|------|------|---------|
+| `report.json` | 3.1 MB | Full structured JSON with all analytics |
+| `report.txt` | 42 KB | Existing text summary (unchanged) |
+| `imageflow_report.txt` | 94 KB | Global Imageflow stats + all domains |
+| `weekly_breakdown.txt` | 1.3 KB | Week-by-week activity |
+| `compatibility_report.txt` | 751 KB | Query keys & plugins by product version |
+| `low_usage_report.txt` | 10 KB | Low usage licenses |
+| `violation_report.txt` | 1.3 KB | License violations |
 
-## What's Left
+## Features Implemented
 
-### 4. Create src/json_report.rs (NEW FILE)
-JSON serialization structures:
-- `JsonReport` - top-level report
-- `LicenseReport` - per-license data
-- `LicenseDistribution` - % using Imageflow, ImageResizer, both, neither
-- `ImageflowGlobalReport` - global Imageflow domain aggregation
-- `WeeklyData`, `DailyMachineCount`, `DomainReport`, etc.
+### JSON Report (`report.json`)
+- License distribution stats (total, imageflow_only, imageresizer_only, both_products, inactive)
+- Per-license data:
+  - Weekly time-series with trends (rising/declining/steady/insufficient)
+  - Daily concurrent machine counts
+  - Per-license domain lists with product type
+  - Job counts by product (Imageflow vs ImageResizer)
+- Global Imageflow domain aggregation
+- Version compatibility tracking (query keys, plugins per version)
+- Feature deprecation candidates (features used by <=3 licenses)
+- Source format usage (jpg, png, tiff, bmp, etc.)
 
-### 5. Modify src/summarize.rs
-- Add `summarize_enhanced()` method to `SplitDataSink`
-- Add report generation functions:
-  - `generate_json_report()`
-  - `generate_imageflow_global_report()`
-  - `generate_weekly_breakdown()`
-- Update `process_lines()` to generate new reports
+### Imageflow Report (`imageflow_report.txt`)
+- Total jobs, machines, licenses using Imageflow
+- All domains using Imageflow across all licenses, sorted by job count
+- First/last seen timestamps for each domain
 
-### 6. Register module in src/main.rs
-```rust
-mod json_report;
-```
+### Weekly Breakdown (`weekly_breakdown.txt`)
+- Week-by-week aggregated activity
+- Total jobs, machines, active licenses per week
 
-### 7. Test with existing log data
-Run summarize command and verify output
+### Compatibility Report (`compatibility_report.txt`)
+- Query keys, extra job query keys, and plugins grouped by product version
+- Job counts and license counts per feature
+- LOW USAGE markers for features used by <=3 licenses
 
-## Key Requirements (from user)
-- JSON reports alongside text
-- Track Imageflow vs ImageResizer separately
-- License distribution stats (% using each product)
-- Weekly time-series with trends (rising/declining/steady)
-- Daily concurrent machines (unique mac_digest per day)
-- Per-license domain lists
-- Global Imageflow domain aggregation (all domains using Imageflow across all licenses)
-- 52 weeks + 90 days of history
-- ~350MB RAM budget acceptable
-- **URGENT: Query keys & plugins by version** - Track which querystring commands (query_keys, extra_job_query_keys) and plugins are used with each product version, to know what needs compatibility maintenance
-- **URGENT: Per-feature usage stats** - For each plugin/query key, track job_count and which licenses use it. Identify deprecation candidates (features used by only 1 license like S3Reader2) vs critical features (used by many)
+## Files Modified
 
-## Output Files to Generate
-| File | Content |
+| File | Changes |
 |------|---------|
-| `report.json` | Full structured JSON |
-| `report.txt` | Existing text (keep) |
-| `imageflow_report.txt` | Global Imageflow + all domains |
-| `weekly_breakdown.txt` | Week-by-week activity |
-| `compatibility_report.txt` | **NEW** Query keys & plugins by product version |
-| `low_usage_report.txt` | Keep existing |
-| `violation_report.txt` | Keep existing |
+| `Cargo.toml` | Added serde, serde_json |
+| `src/util.rs` | Added week_key_from_datetime(), date_key_from_datetime() |
+| `src/telemetry.rs` | Added EnhancedSummary, WeeklyMetrics, DailyMachineStats, DomainStats, ProductType, TrendDirection; made Summary fields pub(crate) |
+| `src/json_report.rs` | **NEW** - All JSON serialization structures and tracking |
+| `src/summarize.rs` | Added summarize_enhanced(), report generation functions |
+| `src/license_blob.rs` | Added get_features() |
+| `src/main.rs` | Registered json_report module |
 
-## Compatibility Report Structure
-Track what needs maintenance by showing query_keys, extra_job_query_keys, and plugins grouped by:
+## Build Status
+Project compiles with 57 warnings (mostly unused imports/fields). No errors.
+
+## To Run
+```bash
+AWS_ACCESS_KEY_ID=xxx AWS_SECRET_ACCESS_KEY=yyy cargo run -- summarize --input logs.licenses.imazen.net --output-directory parsed_test
 ```
-Imageflow 0.9.0:
-  Query keys: width, height, mode, format, quality, ...
-  Plugins: none (Imageflow doesn't use plugins)
-  Job count: 1,234,567
-  License count: 45
-
-ImageResizer 4.2.8:
-  Query keys: width, height, maxwidth, maxheight, mode, ...
-  Extra job query keys: ...
-  Plugins: DiskCache, PrettyGifs, WebP, ...
-  Job count: 2,345,678
-  License count: 89
-```
-This shows which features are actively used per version to guide deprecation decisions.
-
-## Spec File
-See `SPEC-enhanced-analytics.md` for full specification including JSON schema.
-
-## To Resume
-1. `git checkout enhanced-analytics`
-2. Continue with step 4: Create `src/json_report.rs`
-3. Then modify `src/summarize.rs`
-4. Register module and test

@@ -7,13 +7,13 @@ use chrono::{DateTime, TimeZone, Utc};
 //&decoded_pixels_per_second_max=0&decoded_pixels_per_minute_max=0
 //&decoded_pixels_per_15_mins_max=0&decoded_pixels_per_hour_max=0
 #[derive(Debug, Copy, Clone)]
-struct ThroughputStat {
-    name: &'static str,
-    total: u32,
-    per_sec_peak: u32,
-    per_min_peak: u32,
-    per_hour_peak: u32,
-    per_15min_peak: u32,
+pub(crate) struct ThroughputStat {
+    pub(crate) name: &'static str,
+    pub(crate) total: u32,
+    pub(crate) per_sec_peak: u32,
+    pub(crate) per_min_peak: u32,
+    pub(crate) per_hour_peak: u32,
+    pub(crate) per_15min_peak: u32,
 }
 
 impl ThroughputStat {
@@ -39,14 +39,14 @@ impl ThroughputStat {
 // &blob_read_times_5th=0&blob_read_times_25th=0&blob_read_times_50th=0&blob_read_times_75th=0
 // &blob_read_times_95th=0&blob_read_times_100th=0
 #[derive(Debug, Copy, Clone)]
-struct PercentileStat {
-    name: &'static str,
-    p5: u32,
-    p25: u32,
-    p50: u32,
-    p75: u32,
-    p95: u32,
-    p100: u32,
+pub(crate) struct PercentileStat {
+    pub(crate) name: &'static str,
+    pub(crate) p5: u32,
+    pub(crate) p25: u32,
+    pub(crate) p50: u32,
+    pub(crate) p75: u32,
+    pub(crate) p95: u32,
+    pub(crate) p100: u32,
 }
 
 impl PercentileStat {
@@ -82,18 +82,30 @@ pub(crate) struct ProcessAttrs {
     guid: String,
     // proc_info_version=
     pub(crate) info_version: String,
-    file_version: String,
+    pub(crate) file_version: String,
     // proc_id_hash
     process_id_hash: Option<String>,
     //proc_default_commands
     default_commands: Option<String>,
     //&proc_git_commit
-    git_commit: Option<String>,
+    pub(crate) git_commit: Option<String>,
 
     //&proc_apppath_hash: (6 char hash)
     app_path_hash: Option<String>,
     // proc_64=0/1
-    is64bit: bool,
+    pub(crate) is64bit: bool,
+
+    // Additional platform info
+    // proc_sys_dotnet - e.g., "4.7 or later"
+    pub(crate) sys_dotnet: Option<String>,
+    // proc_iis - e.g., "8.5", "10.0"
+    pub(crate) iis_version: Option<String>,
+    // proc_integrated_pipeline
+    pub(crate) integrated_pipeline: Option<bool>,
+    // proc_asyncmodule
+    pub(crate) async_module: Option<bool>,
+    // proc_working_set_mb
+    pub(crate) working_set_mb: Option<i32>,
 }
 impl ProcessAttrs {
     fn parse(pairs: &[(&str, &str)]) -> Self {
@@ -112,6 +124,11 @@ impl ProcessAttrs {
             git_commit: find_value(pairs, "proc_git_commit").map(|s| s.to_string()),
             app_path_hash: find_value(pairs, "proc_apppath_hash").map(|s| s.to_string()),
             is64bit: parse_bool(pairs, "proc_64").unwrap_or(false),
+            sys_dotnet: find_value(pairs, "proc_sys_dotnet"),
+            iis_version: find_value(pairs, "proc_iis"),
+            integrated_pipeline: parse_bool(pairs, "proc_integrated_pipeline"),
+            async_module: parse_bool(pairs, "proc_asyncmodule"),
+            working_set_mb: find_and_parse(pairs, "proc_working_set_mb"),
         }
     }
 }
@@ -128,13 +145,13 @@ impl ProcessAttrs {
 pub(crate) struct HardwareAttrs {
     pub(crate) logical_cores: i32,
     pub(crate) mac_digest: String,
-    os64bit: bool,
-    network_drive_count: i32,
-    fixed_drive_count: i32,
-    other_drive_count: i32,
-    fixed_drives: Vec<Drive>,
-    other_drives: Vec<Drive>,
-    network_drives: Vec<Drive>,
+    pub(crate) os64bit: bool,
+    pub(crate) network_drive_count: i32,
+    pub(crate) fixed_drive_count: i32,
+    pub(crate) other_drive_count: i32,
+    pub(crate) fixed_drives: Vec<Drive>,
+    pub(crate) other_drives: Vec<Drive>,
+    pub(crate) network_drives: Vec<Drive>,
 }
 
 impl HardwareAttrs {
@@ -173,11 +190,11 @@ impl HardwareAttrs {
 //Parse from comma delimited format filesystem(*appdrive),availgb,totalgb.
 //Example value: "NTFS*%2C168%2C274"
 #[derive(Debug, Clone)]
-struct Drive {
-    app_drive: bool, // if the filesystem ends with *, trim it and set this true
-    filesystem: String,
-    available_gb: i32,
-    total_gb: i32,
+pub(crate) struct Drive {
+    pub(crate) app_drive: bool, // if the filesystem ends with *, trim it and set this true
+    pub(crate) filesystem: String,
+    pub(crate) available_gb: i32,
+    pub(crate) total_gb: i32,
 }
 impl Drive {
     fn parse(decoded_input: &str) -> Option<Self> {
@@ -210,28 +227,94 @@ impl Drive {
 }
 
 #[derive(Debug, Clone)]
-struct PipelineStats {
-    // defaults to zero
-    source_file_ext_tiff: i32,
-    source_file_ext_tif: i32,
-    source_file_ext_bmp: i32,
-    source_file_ext_jpg: i32,
-    source_file_ext_png: i32,
-    //&module_response_ext_gif=3&counter_update_failed=0&postauth_ok=662884
-    // &module_response_ext_jpg=11944&postauth_errors_ImageMissingException=711&postauth_errors_ImageCorruptedException=163&source_multiple_x8=104&source_multiple_8x8=99&module_response_ext_png=11150&postauth_errors_ImageProcessingException=1&source_file_ext_jpg=569&source_multiple_16x16=6&postauthjob_ok=673&source_multiple_8x=112&module_response_ext_webp=488819&source_file_ext_png=103&postauth_errors_SizeLimitException=3331&postauth_404_=2387&postauthjob_errors=3494&source_file_ext_gif=1&postauth_errors=4206&postauthjob_errors_SizeLimitException=3331&postauthjob_errors_ImageCorruptedException=163&source_multiple_4x4=641
-    //
-    //
-    // &jobs_completed_total=673&jobs_completed_per_second_max=12&jobs_completed_per_minute_max=45&jobs_completed_per_15_mins_max=258&jobs_completed_per_hour_max=341&
+pub(crate) struct PipelineStats {
+    // Source format counts
+    pub(crate) source_file_ext_tiff: i32,
+    pub(crate) source_file_ext_tif: i32,
+    pub(crate) source_file_ext_bmp: i32,
+    pub(crate) source_file_ext_jpg: i32,
+    pub(crate) source_file_ext_png: i32,
+    pub(crate) source_file_ext_gif: i32,
+    pub(crate) source_file_ext_webp: i32,
+
+    // Response/output format counts
+    pub(crate) module_response_ext_jpg: i32,
+    pub(crate) module_response_ext_png: i32,
+    pub(crate) module_response_ext_gif: i32,
+    pub(crate) module_response_ext_webp: i32,
+
+    // Image scaling/dimension multipliers (e.g., source_multiple_8x8 = 8x scale on both dimensions)
+    // These track how much images are being resized
+    pub(crate) source_multiple_2x: i32,    // 2x on one dimension
+    pub(crate) source_multiple_2x2: i32,   // 2x on both dimensions
+    pub(crate) source_multiple_4x: i32,
+    pub(crate) source_multiple_4x4: i32,
+    pub(crate) source_multiple_8x: i32,
+    pub(crate) source_multiple_x8: i32,
+    pub(crate) source_multiple_8x8: i32,
+    pub(crate) source_multiple_16x: i32,
+    pub(crate) source_multiple_x16: i32,
+    pub(crate) source_multiple_16x16: i32,
+    pub(crate) source_multiple_32x: i32,
+    pub(crate) source_multiple_32x32: i32,
+
+    // Error/success counters
+    pub(crate) postauth_ok: i64,
+    pub(crate) postauth_errors: i64,
+    pub(crate) postauth_404: i64,
+    pub(crate) postauthjob_ok: i64,
+    pub(crate) postauthjob_errors: i64,
+
+    // Specific error types
+    pub(crate) errors_image_missing: i64,
+    pub(crate) errors_image_corrupted: i64,
+    pub(crate) errors_image_processing: i64,
+    pub(crate) errors_size_limit: i64,
 }
 impl PipelineStats {
     fn parse(pairs: &[(&str, &str)]) -> Self {
         PipelineStats {
+            // Source formats
             source_file_ext_tiff: find_and_parse(pairs, "source_file_ext_tiff").unwrap_or(0),
             source_file_ext_tif: find_and_parse(pairs, "source_file_ext_tif").unwrap_or(0),
             source_file_ext_bmp: find_and_parse(pairs, "source_file_ext_bmp").unwrap_or(0),
             source_file_ext_jpg: find_and_parse(pairs, "source_file_ext_jpg").unwrap_or(0),
             source_file_ext_png: find_and_parse(pairs, "source_file_ext_png").unwrap_or(0),
-            // Add additional fields here, following the same pattern.
+            source_file_ext_gif: find_and_parse(pairs, "source_file_ext_gif").unwrap_or(0),
+            source_file_ext_webp: find_and_parse(pairs, "source_file_ext_webp").unwrap_or(0),
+
+            // Response formats
+            module_response_ext_jpg: find_and_parse(pairs, "module_response_ext_jpg").unwrap_or(0),
+            module_response_ext_png: find_and_parse(pairs, "module_response_ext_png").unwrap_or(0),
+            module_response_ext_gif: find_and_parse(pairs, "module_response_ext_gif").unwrap_or(0),
+            module_response_ext_webp: find_and_parse(pairs, "module_response_ext_webp").unwrap_or(0),
+
+            // Image scaling multipliers
+            source_multiple_2x: find_and_parse(pairs, "source_multiple_2x").unwrap_or(0),
+            source_multiple_2x2: find_and_parse(pairs, "source_multiple_2x2").unwrap_or(0),
+            source_multiple_4x: find_and_parse(pairs, "source_multiple_4x").unwrap_or(0),
+            source_multiple_4x4: find_and_parse(pairs, "source_multiple_4x4").unwrap_or(0),
+            source_multiple_8x: find_and_parse(pairs, "source_multiple_8x").unwrap_or(0),
+            source_multiple_x8: find_and_parse(pairs, "source_multiple_x8").unwrap_or(0),
+            source_multiple_8x8: find_and_parse(pairs, "source_multiple_8x8").unwrap_or(0),
+            source_multiple_16x: find_and_parse(pairs, "source_multiple_16x").unwrap_or(0),
+            source_multiple_x16: find_and_parse(pairs, "source_multiple_x16").unwrap_or(0),
+            source_multiple_16x16: find_and_parse(pairs, "source_multiple_16x16").unwrap_or(0),
+            source_multiple_32x: find_and_parse(pairs, "source_multiple_32x").unwrap_or(0),
+            source_multiple_32x32: find_and_parse(pairs, "source_multiple_32x32").unwrap_or(0),
+
+            // Success/error counters
+            postauth_ok: find_and_parse(pairs, "postauth_ok").unwrap_or(0),
+            postauth_errors: find_and_parse(pairs, "postauth_errors").unwrap_or(0),
+            postauth_404: find_and_parse(pairs, "postauth_404_").unwrap_or(0),
+            postauthjob_ok: find_and_parse(pairs, "postauthjob_ok").unwrap_or(0),
+            postauthjob_errors: find_and_parse(pairs, "postauthjob_errors").unwrap_or(0),
+
+            // Specific error types
+            errors_image_missing: find_and_parse(pairs, "postauth_errors_ImageMissingException").unwrap_or(0),
+            errors_image_corrupted: find_and_parse(pairs, "postauth_errors_ImageCorruptedException").unwrap_or(0),
+            errors_image_processing: find_and_parse(pairs, "postauth_errors_ImageProcessingException").unwrap_or(0),
+            errors_size_limit: find_and_parse(pairs, "postauth_errors_SizeLimitException").unwrap_or(0),
         }
     }
 }
@@ -252,30 +335,32 @@ pub(crate) struct Report {
     //&imageflow=1 (default 0)
     pub(crate) is_imageflow: bool,
     //&p=v1&p=v2 (duplicated)
-    plugins: Vec<String>,
+    pub(crate) plugins: Vec<String>,
     //&query_keys=a,b,c (comma delimited)
-    query_keys: Vec<String>,
+    pub(crate) query_keys: Vec<String>,
     //&extra_job_query_keys=a,b,c
-    extra_job_query_keys: Vec<String>,
+    pub(crate) extra_job_query_keys: Vec<String>,
     //&image_domains=v,s,c
     pub(crate) image_domains: Vec<String>,
     //&page_domains=v,s,c
     pub(crate) page_domains: Vec<String>,
     //&enabled_cache=x
     enabled_cache: Option<String>,
-    pipeline: PipelineStats,
+    pub(crate) pipeline: PipelineStats,
     pub(crate) hardware: HardwareAttrs,
     pub(crate) process: ProcessAttrs,
     pub(crate) jobs_completed_total: Option<u64>,
-    jobs_completed: Option<ThroughputStat>,
-    encoded_pixels: Option<ThroughputStat>,
-    decoded_pixels: Option<ThroughputStat>,
-    blob_read_bytes: Option<ThroughputStat>,
-    blob_reads: Option<ThroughputStat>,
-    encode_times: Option<PercentileStat>,
-    decode_times: Option<PercentileStat>,
-    job_times: Option<PercentileStat>,
-    blob_read_times: Option<PercentileStat>,
+    pub(crate) jobs_completed: Option<ThroughputStat>,
+    pub(crate) encoded_pixels: Option<ThroughputStat>,
+    pub(crate) decoded_pixels: Option<ThroughputStat>,
+    pub(crate) blob_read_bytes: Option<ThroughputStat>,
+    pub(crate) blob_reads: Option<ThroughputStat>,
+    pub(crate) encode_times: Option<PercentileStat>,
+    pub(crate) decode_times: Option<PercentileStat>,
+    pub(crate) job_times: Option<PercentileStat>,
+    pub(crate) blob_read_times: Option<PercentileStat>,
+    //&enabled_cache
+    pub(crate) cache_type: Option<String>,
 }
 
 // if (streamCache != null) query.AddString("stream_cache", streamCache.GetType().Name);
@@ -335,27 +420,27 @@ impl Report {
             decode_times: PercentileStat::parse(&pairs, "decode_times"),
             job_times: PercentileStat::parse(&pairs, "job_times"),
             blob_read_times: PercentileStat::parse(&pairs, "blob_read_times"),
-            // Initialize other fields as needed...
+            cache_type: find_value(&pairs, "stream_cache"),
         }
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct Summary {
-    image_domains: Vec<String>,
-    page_domains: Vec<String>,
-    reporter_ips: Vec<String>,
-    query_keys: Vec<String>,
-    extra_job_query_keys: Vec<String>,
-    plugins: Vec<String>,
+    pub(crate) image_domains: Vec<String>,
+    pub(crate) page_domains: Vec<String>,
+    pub(crate) reporter_ips: Vec<String>,
+    pub(crate) query_keys: Vec<String>,
+    pub(crate) extra_job_query_keys: Vec<String>,
+    pub(crate) plugins: Vec<String>,
     // format [cores=logical_cores][x64|x86](mac digest string)
-    machines: Vec<String>,
-    jobs_completed_total: u64,
-    encoded_pixels_total: u64,
-    decoded_pixels_total: u64,
-    info_versions: Vec<String>,
-    default_command_sets: Vec<String>,
-    last_full_report_from: Option<DateTime<Utc>>,
+    pub(crate) machines: Vec<String>,
+    pub(crate) jobs_completed_total: u64,
+    pub(crate) encoded_pixels_total: u64,
+    pub(crate) decoded_pixels_total: u64,
+    pub(crate) info_versions: Vec<String>,
+    pub(crate) default_command_sets: Vec<String>,
+    pub(crate) last_full_report_from: Option<DateTime<Utc>>,
 }
 
 impl Summary {
