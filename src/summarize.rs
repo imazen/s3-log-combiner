@@ -1,7 +1,7 @@
 use crate::cli::QueryParseArgs;
 use crate::json_report::{
     AggregateReport, DailyMachineCount, DomainReport, ErrorTracker, FormatTracker,
-    GlobalImageflowDomainTracker, ImageflowGlobalReport, ImageScalingTracker,
+    GlobalImageflowDomainTracker, ImageScalingTracker, ImageflowGlobalReport,
     InfrastructureTracker, JsonReport, LicenseDistribution, LicenseReport, PerformanceTracker,
     PlatformTracker, ProductMetrics, VersionTracker, WeeklyData,
 };
@@ -729,7 +729,12 @@ fn process_lines(
 
     // Generate enhanced reports
     println!("Generating JSON report...");
-    let json_report = generate_json_report(&data, &version_tracker, &format_tracker, &global_imageflow_tracker);
+    let json_report = generate_json_report(
+        &data,
+        &version_tracker,
+        &format_tracker,
+        &global_imageflow_tracker,
+    );
     let json_str = serde_json::to_string_pretty(&json_report).unwrap_or_else(|e| {
         eprintln!("Error serializing JSON report: {}", e);
         "{}".to_string()
@@ -856,7 +861,9 @@ fn generate_json_report(
 
         // Get license info
         let license_blob = LICENSE_BLOBS.borrow().get(license_id).cloned();
-        let owner = license_blob.as_ref().and_then(|b| b.get_str("Owner").map(|s| s.to_string()));
+        let owner = license_blob
+            .as_ref()
+            .and_then(|b| b.get_str("Owner").map(|s| s.to_string()));
         let features = license_blob
             .as_ref()
             .map(|b| b.get_features())
@@ -935,7 +942,8 @@ fn generate_json_report(
             owner,
             features,
             total_jobs: enhanced.base.jobs_completed_total,
-            unique_machines: enhanced.imageflow_machines.len() + enhanced.imageresizer_machines.len(),
+            unique_machines: enhanced.imageflow_machines.len()
+                + enhanced.imageresizer_machines.len(),
             unique_ips: enhanced.base.reporter_ips.len(),
             imageflow: ProductMetrics {
                 jobs: enhanced.imageflow_jobs,
@@ -1020,8 +1028,14 @@ fn generate_imageflow_report(
     }
 
     report.push_str(&format!("Total Imageflow Jobs: {}\n", total_jobs));
-    report.push_str(&format!("Total Unique Machines: {}\n", total_machines.len()));
-    report.push_str(&format!("Total Licenses Using Imageflow: {}\n\n", license_count));
+    report.push_str(&format!(
+        "Total Unique Machines: {}\n",
+        total_machines.len()
+    ));
+    report.push_str(&format!(
+        "Total Licenses Using Imageflow: {}\n\n",
+        license_count
+    ));
 
     report.push_str("=== ALL IMAGEFLOW DOMAINS ===\n\n");
     let domains = global_tracker.to_global_domain_reports();
@@ -1052,9 +1066,9 @@ fn generate_weekly_breakdown(data: &HashMap<String, GroupedSinks>) -> String {
     for (license_id, sinks) in data {
         let enhanced = sinks.all.summarize_enhanced();
         for (week, metrics) in &enhanced.weekly_metrics {
-            let entry = weekly_totals.entry(week.clone()).or_insert_with(|| {
-                (0, HashSet::new(), 0)
-            });
+            let entry = weekly_totals
+                .entry(week.clone())
+                .or_insert_with(|| (0, HashSet::new(), 0));
             entry.0 += metrics.jobs_completed;
             entry.1.extend(metrics.unique_machines.iter().cloned());
             entry.2 += 1; // license count
@@ -1064,7 +1078,10 @@ fn generate_weekly_breakdown(data: &HashMap<String, GroupedSinks>) -> String {
     for (week, (jobs, machines, licenses)) in weekly_totals.iter().rev() {
         report.push_str(&format!(
             "{}: {} jobs, {} machines, {} active licenses\n",
-            week, jobs, machines.len(), licenses
+            week,
+            jobs,
+            machines.len(),
+            licenses
         ));
     }
 
@@ -1100,22 +1117,40 @@ fn generate_compatibility_report(version_tracker: &VersionTracker) -> String {
     for stats in version_tracker.versions.values() {
         let is_imageflow = stats.product == "imageflow";
         let (query_keys, extra_keys, plugins, versions) = if is_imageflow {
-            (&mut imageflow_query_keys, &mut imageflow_extra_keys, &mut imageflow_plugins, &mut imageflow_versions)
+            (
+                &mut imageflow_query_keys,
+                &mut imageflow_extra_keys,
+                &mut imageflow_plugins,
+                &mut imageflow_versions,
+            )
         } else {
-            (&mut imageresizer_query_keys, &mut imageresizer_extra_keys, &mut imageresizer_plugins, &mut imageresizer_versions)
+            (
+                &mut imageresizer_query_keys,
+                &mut imageresizer_extra_keys,
+                &mut imageresizer_plugins,
+                &mut imageresizer_versions,
+            )
         };
 
-        versions.push((stats.version.clone(), stats.job_count, stats.license_ids.len()));
+        versions.push((
+            stats.version.clone(),
+            stats.job_count,
+            stats.license_ids.len(),
+        ));
 
         // Aggregate query keys with actual license IDs
         for (key, feature_stats) in &stats.query_keys {
-            let entry = query_keys.entry(key.clone()).or_insert_with(|| AggregatedFeature {
-                job_count: 0,
-                license_ids: HashSet::new(),
-                license_names: Vec::new(),
-            });
+            let entry = query_keys
+                .entry(key.clone())
+                .or_insert_with(|| AggregatedFeature {
+                    job_count: 0,
+                    license_ids: HashSet::new(),
+                    license_names: Vec::new(),
+                });
             entry.job_count += feature_stats.job_count;
-            entry.license_ids.extend(feature_stats.license_ids.iter().cloned());
+            entry
+                .license_ids
+                .extend(feature_stats.license_ids.iter().cloned());
             for (id, name) in &feature_stats.license_names {
                 if !entry.license_names.contains(name) {
                     entry.license_names.push(name.clone());
@@ -1125,13 +1160,17 @@ fn generate_compatibility_report(version_tracker: &VersionTracker) -> String {
 
         // Aggregate extra query keys
         for (key, feature_stats) in &stats.extra_job_query_keys {
-            let entry = extra_keys.entry(key.clone()).or_insert_with(|| AggregatedFeature {
-                job_count: 0,
-                license_ids: HashSet::new(),
-                license_names: Vec::new(),
-            });
+            let entry = extra_keys
+                .entry(key.clone())
+                .or_insert_with(|| AggregatedFeature {
+                    job_count: 0,
+                    license_ids: HashSet::new(),
+                    license_names: Vec::new(),
+                });
             entry.job_count += feature_stats.job_count;
-            entry.license_ids.extend(feature_stats.license_ids.iter().cloned());
+            entry
+                .license_ids
+                .extend(feature_stats.license_ids.iter().cloned());
             for (id, name) in &feature_stats.license_names {
                 if !entry.license_names.contains(name) {
                     entry.license_names.push(name.clone());
@@ -1141,13 +1180,17 @@ fn generate_compatibility_report(version_tracker: &VersionTracker) -> String {
 
         // Aggregate plugins
         for (key, feature_stats) in &stats.plugins {
-            let entry = plugins.entry(key.clone()).or_insert_with(|| AggregatedFeature {
-                job_count: 0,
-                license_ids: HashSet::new(),
-                license_names: Vec::new(),
-            });
+            let entry = plugins
+                .entry(key.clone())
+                .or_insert_with(|| AggregatedFeature {
+                    job_count: 0,
+                    license_ids: HashSet::new(),
+                    license_names: Vec::new(),
+                });
             entry.job_count += feature_stats.job_count;
-            entry.license_ids.extend(feature_stats.license_ids.iter().cloned());
+            entry
+                .license_ids
+                .extend(feature_stats.license_ids.iter().cloned());
             for (id, name) in &feature_stats.license_names {
                 if !entry.license_names.contains(name) {
                     entry.license_names.push(name.clone());
@@ -1167,7 +1210,10 @@ fn generate_compatibility_report(version_tracker: &VersionTracker) -> String {
         }
         report.push_str(&format!("{}\n", title));
         report.push_str(&format!("{:-<80}\n", ""));
-        report.push_str(&format!("{:<50} {:>12} {:>12}\n", "Feature", "Licenses", "Jobs"));
+        report.push_str(&format!(
+            "{:<50} {:>12} {:>12}\n",
+            "Feature", "Licenses", "Jobs"
+        ));
         report.push_str(&format!("{:-<80}\n", ""));
 
         let mut sorted: Vec<_> = features.iter().collect();
@@ -1198,14 +1244,21 @@ fn generate_compatibility_report(version_tracker: &VersionTracker) -> String {
         }
         report.push_str(&format!("{}\n", title));
         report.push_str(&format!("{:-<80}\n", ""));
-        report.push_str(&format!("{:<50} {:>12} {:>12}\n", "Version", "Licenses", "Jobs"));
+        report.push_str(&format!(
+            "{:<50} {:>12} {:>12}\n",
+            "Version", "Licenses", "Jobs"
+        ));
         report.push_str(&format!("{:-<80}\n", ""));
 
         let mut sorted = versions.to_vec();
         sorted.sort_by(|a, b| b.2.cmp(&a.2)); // Sort by license count
 
         for (version, jobs, licenses) in sorted {
-            let display_version = if version.len() > 48 { &version[..48] } else { &version };
+            let display_version = if version.len() > 48 {
+                &version[..48]
+            } else {
+                &version
+            };
             report.push_str(&format!(
                 "{:<50} {:>12} {:>12}\n",
                 display_version, licenses, jobs
@@ -1215,9 +1268,13 @@ fn generate_compatibility_report(version_tracker: &VersionTracker) -> String {
     }
 
     // ================== IMAGEFLOW SECTION ==================
-    report.push_str("================================================================================\n");
+    report.push_str(
+        "================================================================================\n",
+    );
     report.push_str("                              IMAGEFLOW\n");
-    report.push_str("================================================================================\n\n");
+    report.push_str(
+        "================================================================================\n\n",
+    );
 
     write_feature_table(&mut report, "QUERY KEYS", &imageflow_query_keys);
     write_feature_table(&mut report, "EXTRA JOB QUERY KEYS", &imageflow_extra_keys);
@@ -1225,21 +1282,33 @@ fn generate_compatibility_report(version_tracker: &VersionTracker) -> String {
     write_version_table(&mut report, "VERSIONS", &imageflow_versions);
 
     // ================== IMAGERESIZER SECTION ==================
-    report.push_str("================================================================================\n");
+    report.push_str(
+        "================================================================================\n",
+    );
     report.push_str("                              IMAGERESIZER\n");
-    report.push_str("================================================================================\n\n");
+    report.push_str(
+        "================================================================================\n\n",
+    );
 
     write_feature_table(&mut report, "QUERY KEYS", &imageresizer_query_keys);
-    write_feature_table(&mut report, "EXTRA JOB QUERY KEYS", &imageresizer_extra_keys);
+    write_feature_table(
+        &mut report,
+        "EXTRA JOB QUERY KEYS",
+        &imageresizer_extra_keys,
+    );
     write_feature_table(&mut report, "PLUGINS", &imageresizer_plugins);
     write_version_table(&mut report, "VERSIONS", &imageresizer_versions);
 
     // Deprecation candidates section
     let candidates = version_tracker.find_deprecation_candidates(3);
     if !candidates.is_empty() {
-        report.push_str("================================================================================\n");
+        report.push_str(
+            "================================================================================\n",
+        );
         report.push_str("                    DEPRECATION CANDIDATES (<=3 licenses)\n");
-        report.push_str("================================================================================\n\n");
+        report.push_str(
+            "================================================================================\n\n",
+        );
 
         for c in &candidates {
             report.push_str(&format!(
@@ -1262,7 +1331,10 @@ fn generate_infrastructure_report(tracker: &InfrastructureTracker) -> String {
     // CPU Core Distribution
     report.push_str("CPU CORE DISTRIBUTION\n");
     report.push_str(&format!("{:-<60}\n", ""));
-    report.push_str(&format!("{:<20} {:>15} {:>15}\n", "Cores", "Machines", "Licenses"));
+    report.push_str(&format!(
+        "{:<20} {:>15} {:>15}\n",
+        "Cores", "Machines", "Licenses"
+    ));
     report.push_str(&format!("{:-<60}\n", ""));
 
     let mut cores: Vec<_> = tracker.core_distribution.iter().collect();
@@ -1270,7 +1342,9 @@ fn generate_infrastructure_report(tracker: &InfrastructureTracker) -> String {
     for (core_count, (machines, licenses)) in cores {
         report.push_str(&format!(
             "{:<20} {:>15} {:>15}\n",
-            core_count, machines, licenses.len()
+            core_count,
+            machines,
+            licenses.len()
         ));
     }
     report.push('\n');
@@ -1294,15 +1368,21 @@ fn generate_infrastructure_report(tracker: &InfrastructureTracker) -> String {
     // Filesystem Types
     report.push_str("FILESYSTEM TYPES\n");
     report.push_str(&format!("{:-<60}\n", ""));
-    report.push_str(&format!("{:<20} {:>12} {:>15} {:>10}\n", "Filesystem", "Drives", "Total GB", "Licenses"));
+    report.push_str(&format!(
+        "{:<20} {:>12} {:>15} {:>10}\n",
+        "Filesystem", "Drives", "Total GB", "Licenses"
+    ));
     report.push_str(&format!("{:-<60}\n", ""));
 
     let mut filesystems: Vec<_> = tracker.filesystem_types.iter().collect();
-    filesystems.sort_by(|a, b| b.1.1.cmp(&a.1.1)); // Sort by total GB
+    filesystems.sort_by(|a, b| b.1 .1.cmp(&a.1 .1)); // Sort by total GB
     for (fs, (drives, total_gb, licenses)) in filesystems {
         report.push_str(&format!(
             "{:<20} {:>12} {:>15} {:>10}\n",
-            fs, drives, total_gb, licenses.len()
+            fs,
+            drives,
+            total_gb,
+            licenses.len()
         ));
     }
     report.push('\n');
@@ -1310,11 +1390,13 @@ fn generate_infrastructure_report(tracker: &InfrastructureTracker) -> String {
     // Storage Summary
     report.push_str("STORAGE SUMMARY\n");
     report.push_str(&format!("{:-<60}\n", ""));
-    report.push_str(&format!("Total Storage Tracked: {} GB ({:.1} TB)\n",
+    report.push_str(&format!(
+        "Total Storage Tracked: {} GB ({:.1} TB)\n",
         tracker.total_storage_gb,
         tracker.total_storage_gb as f64 / 1024.0
     ));
-    report.push_str(&format!("Total Available: {} GB ({:.1} TB)\n",
+    report.push_str(&format!(
+        "Total Available: {} GB ({:.1} TB)\n",
         tracker.total_available_gb,
         tracker.total_available_gb as f64 / 1024.0
     ));
@@ -1350,7 +1432,7 @@ fn generate_platform_report(tracker: &PlatformTracker) -> String {
         report.push_str(&format!("{:-<60}\n", ""));
 
         let mut versions: Vec<_> = tracker.dotnet_versions.iter().collect();
-        versions.sort_by(|a, b| b.1.0.cmp(&a.1.0));
+        versions.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
         for (version, (machines, _)) in versions {
             report.push_str(&format!("{:<40} {:>15}\n", version, machines));
         }
@@ -1365,7 +1447,7 @@ fn generate_platform_report(tracker: &PlatformTracker) -> String {
         report.push_str(&format!("{:-<60}\n", ""));
 
         let mut versions: Vec<_> = tracker.iis_versions.iter().collect();
-        versions.sort_by(|a, b| b.1.0.cmp(&a.1.0));
+        versions.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
         for (version, (machines, _)) in versions {
             report.push_str(&format!("{:<40} {:>15}\n", version, machines));
         }
@@ -1375,9 +1457,18 @@ fn generate_platform_report(tracker: &PlatformTracker) -> String {
     // Pipeline Mode
     report.push_str("PIPELINE MODE\n");
     report.push_str(&format!("{:-<60}\n", ""));
-    report.push_str(&format!("Integrated Pipeline: {}\n", tracker.integrated_pipeline_count));
-    report.push_str(&format!("Classic Pipeline: {}\n", tracker.classic_pipeline_count));
-    report.push_str(&format!("Async Module Enabled: {}\n", tracker.async_module_count));
+    report.push_str(&format!(
+        "Integrated Pipeline: {}\n",
+        tracker.integrated_pipeline_count
+    ));
+    report.push_str(&format!(
+        "Classic Pipeline: {}\n",
+        tracker.classic_pipeline_count
+    ));
+    report.push_str(&format!(
+        "Async Module Enabled: {}\n",
+        tracker.async_module_count
+    ));
     report.push('\n');
 
     // Cache Types
@@ -1388,7 +1479,7 @@ fn generate_platform_report(tracker: &PlatformTracker) -> String {
         report.push_str(&format!("{:-<60}\n", ""));
 
         let mut caches: Vec<_> = tracker.cache_types.iter().collect();
-        caches.sort_by(|a, b| b.1.0.cmp(&a.1.0));
+        caches.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
         for (cache, (machines, _)) in caches {
             report.push_str(&format!("{:<40} {:>15}\n", cache, machines));
         }
@@ -1419,11 +1510,18 @@ fn generate_platform_report(tracker: &PlatformTracker) -> String {
         let mut commits: Vec<_> = tracker.git_commits.iter().collect();
         commits.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
         for (commit, licenses) in commits.iter().take(20) {
-            let display_commit = if commit.len() > 40 { &commit[..40] } else { commit };
+            let display_commit = if commit.len() > 40 {
+                &commit[..40]
+            } else {
+                commit
+            };
             report.push_str(&format!("{:<45} {:>10}\n", display_commit, licenses.len()));
         }
         if tracker.git_commits.len() > 20 {
-            report.push_str(&format!("... and {} more\n", tracker.git_commits.len() - 20));
+            report.push_str(&format!(
+                "... and {} more\n",
+                tracker.git_commits.len() - 20
+            ));
         }
     }
 
@@ -1439,9 +1537,18 @@ fn generate_performance_report(tracker: &PerformanceTracker) -> String {
     // Throughput Stats
     report.push_str("JOB THROUGHPUT\n");
     report.push_str(&format!("{:-<60}\n", ""));
-    report.push_str(&format!("Peak Jobs/Second: {}\n", summary.jobs_per_second_max));
-    report.push_str(&format!("Average Jobs/Second: {:.1}\n", summary.jobs_per_second_avg));
-    report.push_str(&format!("Peak Jobs/Minute: {}\n", summary.jobs_per_minute_max));
+    report.push_str(&format!(
+        "Peak Jobs/Second: {}\n",
+        summary.jobs_per_second_max
+    ));
+    report.push_str(&format!(
+        "Average Jobs/Second: {:.1}\n",
+        summary.jobs_per_second_avg
+    ));
+    report.push_str(&format!(
+        "Peak Jobs/Minute: {}\n",
+        summary.jobs_per_minute_max
+    ));
     report.push_str(&format!("Peak Jobs/Hour: {}\n", summary.jobs_per_hour_max));
     report.push('\n');
 
@@ -1457,12 +1564,15 @@ fn generate_performance_report(tracker: &PerformanceTracker) -> String {
     // Latency Stats (values are in nanoseconds * 1000 or microseconds from the telemetry)
     report.push_str("LATENCY PERCENTILES\n");
     report.push_str(&format!("{:-<70}\n", ""));
-    report.push_str(&format!("{:<25} {:>10} {:>12} {:>12} {:>10}\n",
-        "Operation", "Samples", "P50 (us)", "P95 (us)", "Max (us)"));
+    report.push_str(&format!(
+        "{:<25} {:>10} {:>12} {:>12} {:>10}\n",
+        "Operation", "Samples", "P50 (us)", "P95 (us)", "Max (us)"
+    ));
     report.push_str(&format!("{:-<70}\n", ""));
 
     // Job times
-    report.push_str(&format!("{:<25} {:>10} {:>12} {:>12} {:>10}\n",
+    report.push_str(&format!(
+        "{:<25} {:>10} {:>12} {:>12} {:>10}\n",
         "Job Processing",
         tracker.job_times_p50.len(),
         ns_to_ms(summary.job_time_p50_median),
@@ -1471,7 +1581,8 @@ fn generate_performance_report(tracker: &PerformanceTracker) -> String {
     ));
 
     // Encode times
-    report.push_str(&format!("{:<25} {:>10} {:>12} {:>12} {:>10}\n",
+    report.push_str(&format!(
+        "{:<25} {:>10} {:>12} {:>12} {:>10}\n",
         "Encoding",
         tracker.encode_times_p50.len(),
         ns_to_ms(summary.encode_time_p50_median),
@@ -1480,7 +1591,8 @@ fn generate_performance_report(tracker: &PerformanceTracker) -> String {
     ));
 
     // Decode times
-    report.push_str(&format!("{:<25} {:>10} {:>12} {:>12} {:>10}\n",
+    report.push_str(&format!(
+        "{:<25} {:>10} {:>12} {:>12} {:>10}\n",
         "Decoding",
         tracker.decode_times_p50.len(),
         ns_to_ms(summary.decode_time_p50_median),
@@ -1489,7 +1601,8 @@ fn generate_performance_report(tracker: &PerformanceTracker) -> String {
     ));
 
     // Blob read times
-    report.push_str(&format!("{:<25} {:>10} {:>12} {:>12} {:>10}\n",
+    report.push_str(&format!(
+        "{:<25} {:>10} {:>12} {:>12} {:>10}\n",
         "Blob Read",
         tracker.blob_read_times_p50.len(),
         ns_to_ms(summary.blob_read_time_p50_median),
@@ -1528,19 +1641,23 @@ fn generate_performance_report(tracker: &PerformanceTracker) -> String {
     // Pixel Throughput
     report.push_str("PIXEL THROUGHPUT\n");
     report.push_str(&format!("{:-<60}\n", ""));
-    report.push_str(&format!("Total Encoded Pixels: {} ({:.2} billion)\n",
+    report.push_str(&format!(
+        "Total Encoded Pixels: {} ({:.2} billion)\n",
         summary.encoded_pixels_total,
         summary.encoded_pixels_total as f64 / 1_000_000_000.0
     ));
-    report.push_str(&format!("Total Decoded Pixels: {} ({:.2} billion)\n",
+    report.push_str(&format!(
+        "Total Decoded Pixels: {} ({:.2} billion)\n",
         summary.decoded_pixels_total,
         summary.decoded_pixels_total as f64 / 1_000_000_000.0
     ));
-    report.push_str(&format!("Peak Encoded Pixels/Second: {} ({:.1} MP/s)\n",
+    report.push_str(&format!(
+        "Peak Encoded Pixels/Second: {} ({:.1} MP/s)\n",
         summary.encoded_pixels_per_sec_peak,
         summary.encoded_pixels_per_sec_peak as f64 / 1_000_000.0
     ));
-    report.push_str(&format!("Peak Decoded Pixels/Second: {} ({:.1} MP/s)\n",
+    report.push_str(&format!(
+        "Peak Decoded Pixels/Second: {} ({:.1} MP/s)\n",
         summary.decoded_pixels_per_sec_peak,
         summary.decoded_pixels_per_sec_peak as f64 / 1_000_000.0
     ));
@@ -1561,13 +1678,19 @@ fn generate_scaling_report(tracker: &ImageScalingTracker) -> String {
     report.push_str("ALIGNMENT SUMMARY\n");
     report.push_str(&format!("{:-<60}\n", ""));
     report.push_str(&format!("Total Alignment Observations: {}\n", total));
-    report.push_str(&format!("Licenses with Alignment Data: {}\n", tracker.license_scaling.len()));
+    report.push_str(&format!(
+        "Licenses with Alignment Data: {}\n",
+        tracker.license_scaling.len()
+    ));
     report.push('\n');
 
     // Distribution by alignment
     report.push_str("ALIGNMENT DISTRIBUTION\n");
     report.push_str(&format!("{:-<70}\n", ""));
-    report.push_str(&format!("{:<28} {:>15} {:>12}\n", "Alignment Type", "Count", "Percentage"));
+    report.push_str(&format!(
+        "{:<28} {:>15} {:>12}\n",
+        "Alignment Type", "Count", "Percentage"
+    ));
     report.push_str(&format!("{:-<70}\n", ""));
 
     let dist = tracker.get_distribution();
@@ -1583,15 +1706,38 @@ fn generate_scaling_report(tracker: &ImageScalingTracker) -> String {
     // Detailed breakdown
     report.push_str("DETAILED BREAKDOWN BY FIELD\n");
     report.push_str(&format!("{:-<70}\n", ""));
-    report.push_str(&format!("{:<30} {:>15} {:>20}\n", "Bucket", "Count", "Meaning"));
+    report.push_str(&format!(
+        "{:<30} {:>15} {:>20}\n",
+        "Bucket", "Count", "Meaning"
+    ));
     report.push_str(&format!("{:-<70}\n", ""));
 
     let buckets = [
-        ("source_multiple_4x4", tracker.scale_4x4, "w AND h divisible by 4"),
-        ("source_multiple_8x", tracker.scale_8x, "width divisible by 8"),
-        ("source_multiple_x8", tracker.scale_x8, "height divisible by 8"),
-        ("source_multiple_8x8", tracker.scale_8x8, "w AND h %8 (JPEG blocks)"),
-        ("source_multiple_16x16", tracker.scale_16x16, "w AND h %16 (macroblocks)"),
+        (
+            "source_multiple_4x4",
+            tracker.scale_4x4,
+            "w AND h divisible by 4",
+        ),
+        (
+            "source_multiple_8x",
+            tracker.scale_8x,
+            "width divisible by 8",
+        ),
+        (
+            "source_multiple_x8",
+            tracker.scale_x8,
+            "height divisible by 8",
+        ),
+        (
+            "source_multiple_8x8",
+            tracker.scale_8x8,
+            "w AND h %8 (JPEG blocks)",
+        ),
+        (
+            "source_multiple_16x16",
+            tracker.scale_16x16,
+            "w AND h %16 (macroblocks)",
+        ),
     ];
 
     for (name, count, meaning) in buckets {
@@ -1633,11 +1779,17 @@ fn generate_error_report(tracker: &ErrorTracker) -> String {
     report.push_str(&format!("{:-<60}\n", ""));
     let total_requests = tracker.total_ok + tracker.total_errors;
     report.push_str(&format!("Total Requests: {}\n", total_requests));
-    report.push_str(&format!("Successful: {} ({:.2}%)\n",
+    report.push_str(&format!(
+        "Successful: {} ({:.2}%)\n",
         tracker.total_ok,
-        if total_requests > 0 { tracker.total_ok as f64 / total_requests as f64 * 100.0 } else { 0.0 }
+        if total_requests > 0 {
+            tracker.total_ok as f64 / total_requests as f64 * 100.0
+        } else {
+            0.0
+        }
     ));
-    report.push_str(&format!("Errors: {} ({:.2}%)\n",
+    report.push_str(&format!(
+        "Errors: {} ({:.2}%)\n",
         tracker.total_errors,
         tracker.overall_error_rate()
     ));
@@ -1651,7 +1803,8 @@ fn generate_error_report(tracker: &ErrorTracker) -> String {
         report.push_str(&format!("{:-<60}\n", ""));
         report.push_str(&format!("Total Jobs: {}\n", total_jobs));
         report.push_str(&format!("Successful: {}\n", tracker.job_ok));
-        report.push_str(&format!("Failed: {} ({:.2}%)\n",
+        report.push_str(&format!(
+            "Failed: {} ({:.2}%)\n",
             tracker.job_errors,
             tracker.job_errors as f64 / total_jobs as f64 * 100.0
         ));
@@ -1662,7 +1815,10 @@ fn generate_error_report(tracker: &ErrorTracker) -> String {
     if !tracker.errors_by_type.is_empty() {
         report.push_str("ERROR BREAKDOWN BY TYPE\n");
         report.push_str(&format!("{:-<60}\n", ""));
-        report.push_str(&format!("{:<30} {:>15} {:>12}\n", "Error Type", "Count", "% of Errors"));
+        report.push_str(&format!(
+            "{:<30} {:>15} {:>12}\n",
+            "Error Type", "Count", "% of Errors"
+        ));
         report.push_str(&format!("{:-<60}\n", ""));
 
         let mut errors: Vec<_> = tracker.errors_by_type.iter().collect();
@@ -1673,7 +1829,10 @@ fn generate_error_report(tracker: &ErrorTracker) -> String {
             } else {
                 0.0
             };
-            report.push_str(&format!("{:<30} {:>15} {:>11.1}%\n", error_type, count, pct));
+            report.push_str(&format!(
+                "{:<30} {:>15} {:>11.1}%\n",
+                error_type, count, pct
+            ));
         }
         report.push('\n');
     }
@@ -1682,7 +1841,10 @@ fn generate_error_report(tracker: &ErrorTracker) -> String {
     if !tracker.response_formats.is_empty() {
         report.push_str("OUTPUT FORMAT DISTRIBUTION\n");
         report.push_str(&format!("{:-<60}\n", ""));
-        report.push_str(&format!("{:<20} {:>15} {:>12}\n", "Format", "Count", "Percentage"));
+        report.push_str(&format!(
+            "{:<20} {:>15} {:>12}\n",
+            "Format", "Count", "Percentage"
+        ));
         report.push_str(&format!("{:-<60}\n", ""));
 
         let total_response: i64 = tracker.response_formats.values().sum();
@@ -1703,7 +1865,10 @@ fn generate_error_report(tracker: &ErrorTracker) -> String {
     if !tracker.source_formats.is_empty() {
         report.push_str("SOURCE FORMAT DISTRIBUTION\n");
         report.push_str(&format!("{:-<60}\n", ""));
-        report.push_str(&format!("{:<20} {:>15} {:>12}\n", "Format", "Count", "Percentage"));
+        report.push_str(&format!(
+            "{:<20} {:>15} {:>12}\n",
+            "Format", "Count", "Percentage"
+        ));
         report.push_str(&format!("{:-<60}\n", ""));
 
         let total_source: i64 = tracker.source_formats.values().sum();
@@ -1725,12 +1890,18 @@ fn generate_error_report(tracker: &ErrorTracker) -> String {
     if !high_error.is_empty() {
         report.push_str("LICENSES WITH HIGH ERROR RATES (>5%)\n");
         report.push_str(&format!("{:-<80}\n", ""));
-        report.push_str(&format!("{:<20} {:>12} {:>15} {:>15}\n", "License ID", "Error Rate", "OK", "Errors"));
+        report.push_str(&format!(
+            "{:<20} {:>12} {:>15} {:>15}\n",
+            "License ID", "Error Rate", "OK", "Errors"
+        ));
         report.push_str(&format!("{:-<80}\n", ""));
 
         for (id, rate, ok, errors) in high_error.iter().take(20) {
             let display_id = if id.len() > 18 { &id[..18] } else { id };
-            report.push_str(&format!("{:<20} {:>11.1}% {:>15} {:>15}\n", display_id, rate, ok, errors));
+            report.push_str(&format!(
+                "{:<20} {:>11.1}% {:>15} {:>15}\n",
+                display_id, rate, ok, errors
+            ));
         }
         if high_error.len() > 20 {
             report.push_str(&format!("... and {} more\n", high_error.len() - 20));

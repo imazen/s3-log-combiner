@@ -245,8 +245,8 @@ pub(crate) struct PipelineStats {
 
     // Image scaling/dimension multipliers (e.g., source_multiple_8x8 = 8x scale on both dimensions)
     // These track how much images are being resized
-    pub(crate) source_multiple_2x: i32,    // 2x on one dimension
-    pub(crate) source_multiple_2x2: i32,   // 2x on both dimensions
+    pub(crate) source_multiple_2x: i32,  // 2x on one dimension
+    pub(crate) source_multiple_2x2: i32, // 2x on both dimensions
     pub(crate) source_multiple_4x: i32,
     pub(crate) source_multiple_4x4: i32,
     pub(crate) source_multiple_8x: i32,
@@ -287,7 +287,8 @@ impl PipelineStats {
             module_response_ext_jpg: find_and_parse(pairs, "module_response_ext_jpg").unwrap_or(0),
             module_response_ext_png: find_and_parse(pairs, "module_response_ext_png").unwrap_or(0),
             module_response_ext_gif: find_and_parse(pairs, "module_response_ext_gif").unwrap_or(0),
-            module_response_ext_webp: find_and_parse(pairs, "module_response_ext_webp").unwrap_or(0),
+            module_response_ext_webp: find_and_parse(pairs, "module_response_ext_webp")
+                .unwrap_or(0),
 
             // Image scaling multipliers
             source_multiple_2x: find_and_parse(pairs, "source_multiple_2x").unwrap_or(0),
@@ -311,10 +312,20 @@ impl PipelineStats {
             postauthjob_errors: find_and_parse(pairs, "postauthjob_errors").unwrap_or(0),
 
             // Specific error types
-            errors_image_missing: find_and_parse(pairs, "postauth_errors_ImageMissingException").unwrap_or(0),
-            errors_image_corrupted: find_and_parse(pairs, "postauth_errors_ImageCorruptedException").unwrap_or(0),
-            errors_image_processing: find_and_parse(pairs, "postauth_errors_ImageProcessingException").unwrap_or(0),
-            errors_size_limit: find_and_parse(pairs, "postauth_errors_SizeLimitException").unwrap_or(0),
+            errors_image_missing: find_and_parse(pairs, "postauth_errors_ImageMissingException")
+                .unwrap_or(0),
+            errors_image_corrupted: find_and_parse(
+                pairs,
+                "postauth_errors_ImageCorruptedException",
+            )
+            .unwrap_or(0),
+            errors_image_processing: find_and_parse(
+                pairs,
+                "postauth_errors_ImageProcessingException",
+            )
+            .unwrap_or(0),
+            errors_size_limit: find_and_parse(pairs, "postauth_errors_SizeLimitException")
+                .unwrap_or(0),
         }
     }
 }
@@ -755,12 +766,13 @@ impl EnhancedSummary {
         );
 
         // Update weekly metrics
-        let weekly = self.weekly_metrics.entry(week_key.clone()).or_insert_with(|| {
-            WeeklyMetrics {
+        let weekly = self
+            .weekly_metrics
+            .entry(week_key.clone())
+            .or_insert_with(|| WeeklyMetrics {
                 week_key: week_key.clone(),
                 ..Default::default()
-            }
-        });
+            });
 
         if full_report {
             if let Some(jobs) = report.jobs_completed_total {
@@ -784,12 +796,13 @@ impl EnhancedSummary {
         );
 
         // Update daily machine stats
-        let daily = self.daily_machines.entry(date_key.clone()).or_insert_with(|| {
-            DailyMachineStats {
+        let daily = self
+            .daily_machines
+            .entry(date_key.clone())
+            .or_insert_with(|| DailyMachineStats {
                 date_key: date_key.clone(),
                 ..Default::default()
-            }
-        });
+            });
         daily.unique_machines.insert(mac_digest.clone());
         if full_report {
             if let Some(jobs) = report.jobs_completed_total {
@@ -819,12 +832,13 @@ impl EnhancedSummary {
             if domain.is_empty() {
                 continue;
             }
-            let stats = self.domain_stats.entry(domain.clone()).or_insert_with(|| {
-                DomainStats {
+            let stats = self
+                .domain_stats
+                .entry(domain.clone())
+                .or_insert_with(|| DomainStats {
                     domain: domain.clone(),
                     ..Default::default()
-                }
-            });
+                });
             if full_report {
                 if let Some(jobs) = report.jobs_completed_total {
                     stats.job_count += jobs;

@@ -319,25 +319,26 @@ impl VersionTracker {
             .versions
             .values()
             .map(|stats| {
-                let convert_features = |src: &HashMap<String, FeatureStats>| -> HashMap<String, FeatureUsage> {
-                    src.iter()
-                        .map(|(name, fs)| {
-                            let licenses = if fs.license_ids.len() <= 3 {
-                                fs.license_names.values().cloned().collect()
-                            } else {
-                                Vec::new()
-                            };
-                            (
-                                name.clone(),
-                                FeatureUsage {
-                                    job_count: fs.job_count,
-                                    license_count: fs.license_ids.len(),
-                                    licenses,
-                                },
-                            )
-                        })
-                        .collect()
-                };
+                let convert_features =
+                    |src: &HashMap<String, FeatureStats>| -> HashMap<String, FeatureUsage> {
+                        src.iter()
+                            .map(|(name, fs)| {
+                                let licenses = if fs.license_ids.len() <= 3 {
+                                    fs.license_names.values().cloned().collect()
+                                } else {
+                                    Vec::new()
+                                };
+                                (
+                                    name.clone(),
+                                    FeatureUsage {
+                                        job_count: fs.job_count,
+                                        license_count: fs.license_ids.len(),
+                                        licenses,
+                                    },
+                                )
+                            })
+                            .collect()
+                    };
 
                 VersionCompatibilityReport {
                     product: stats.product.clone(),
@@ -490,11 +491,7 @@ impl GlobalImageflowDomainTracker {
     }
 
     /// Add Imageflow domain data from a report
-    pub fn add_imageflow_domains(
-        &mut self,
-        report: &crate::telemetry::Report,
-        license_id: &str,
-    ) {
+    pub fn add_imageflow_domains(&mut self, report: &crate::telemetry::Report, license_id: &str) {
         let product = crate::telemetry::ProductType::from_report(report);
         if product != crate::telemetry::ProductType::Imageflow {
             return;
@@ -505,12 +502,13 @@ impl GlobalImageflowDomainTracker {
                 continue;
             }
 
-            let stats = self.domains.entry(domain.clone()).or_insert_with(|| {
-                GlobalDomainStats {
+            let stats = self
+                .domains
+                .entry(domain.clone())
+                .or_insert_with(|| GlobalDomainStats {
                     domain: domain.clone(),
                     ..Default::default()
-                }
-            });
+                });
 
             if let Some(jobs) = report.jobs_completed_total {
                 stats.total_jobs += jobs;
@@ -586,28 +584,44 @@ impl InfrastructureTracker {
 
         // Core distribution
         let cores = report.hardware.logical_cores;
-        let entry = self.core_distribution.entry(cores).or_insert((0, HashSet::new()));
+        let entry = self
+            .core_distribution
+            .entry(cores)
+            .or_insert((0, HashSet::new()));
         if entry.1.insert(mac.clone()) {
             entry.0 += 1;
         }
 
         // OS architecture
-        let os_arch = if report.hardware.os64bit { "x64" } else { "x86" };
-        let entry = self.os_architecture.entry(os_arch.to_string()).or_insert((0, HashSet::new()));
+        let os_arch = if report.hardware.os64bit {
+            "x64"
+        } else {
+            "x86"
+        };
+        let entry = self
+            .os_architecture
+            .entry(os_arch.to_string())
+            .or_insert((0, HashSet::new()));
         if entry.1.insert(mac.clone()) {
             entry.0 += 1;
         }
 
         // Process architecture
         let proc_arch = if report.process.is64bit { "x64" } else { "x86" };
-        let entry = self.process_architecture.entry(proc_arch.to_string()).or_insert((0, HashSet::new()));
+        let entry = self
+            .process_architecture
+            .entry(proc_arch.to_string())
+            .or_insert((0, HashSet::new()));
         if entry.1.insert(mac.clone()) {
             entry.0 += 1;
         }
 
         // Filesystem types and storage
         for drive in &report.hardware.fixed_drives {
-            let entry = self.filesystem_types.entry(drive.filesystem.clone()).or_insert((0, 0, HashSet::new()));
+            let entry = self
+                .filesystem_types
+                .entry(drive.filesystem.clone())
+                .or_insert((0, 0, HashSet::new()));
             entry.0 += 1;
             entry.1 += drive.total_gb as i64;
             entry.2.insert(license_id.to_string());
@@ -616,7 +630,12 @@ impl InfrastructureTracker {
         }
 
         // Storage tiers (based on total fixed storage per machine)
-        let total_machine_storage: i64 = report.hardware.fixed_drives.iter().map(|d| d.total_gb as i64).sum();
+        let total_machine_storage: i64 = report
+            .hardware
+            .fixed_drives
+            .iter()
+            .map(|d| d.total_gb as i64)
+            .sum();
         let tier = if total_machine_storage < 100 {
             "<100GB"
         } else if total_machine_storage < 500 {
@@ -665,7 +684,10 @@ impl PlatformTracker {
         // .NET version
         if let Some(ref dotnet) = report.process.sys_dotnet {
             if !dotnet.is_empty() {
-                let entry = self.dotnet_versions.entry(dotnet.clone()).or_insert((0, HashSet::new()));
+                let entry = self
+                    .dotnet_versions
+                    .entry(dotnet.clone())
+                    .or_insert((0, HashSet::new()));
                 if entry.1.insert(mac.clone()) {
                     entry.0 += 1;
                 }
@@ -675,7 +697,10 @@ impl PlatformTracker {
         // IIS version
         if let Some(ref iis) = report.process.iis_version {
             if !iis.is_empty() {
-                let entry = self.iis_versions.entry(iis.clone()).or_insert((0, HashSet::new()));
+                let entry = self
+                    .iis_versions
+                    .entry(iis.clone())
+                    .or_insert((0, HashSet::new()));
                 if entry.1.insert(mac.clone()) {
                     entry.0 += 1;
                 }
@@ -701,7 +726,10 @@ impl PlatformTracker {
         // Cache type
         if let Some(ref cache) = report.cache_type {
             if !cache.is_empty() {
-                let entry = self.cache_types.entry(cache.clone()).or_insert((0, HashSet::new()));
+                let entry = self
+                    .cache_types
+                    .entry(cache.clone())
+                    .or_insert((0, HashSet::new()));
                 if entry.1.insert(mac.clone()) {
                     entry.0 += 1;
                 }
@@ -721,7 +749,10 @@ impl PlatformTracker {
             } else {
                 "2GB+"
             };
-            *self.memory_distribution.entry(tier.to_string()).or_insert(0) += 1;
+            *self
+                .memory_distribution
+                .entry(tier.to_string())
+                .or_insert(0) += 1;
         }
 
         // Git commits
@@ -789,27 +820,45 @@ impl PerformanceTracker {
 
         // Job times (filter out zeros - values are in nanoseconds in the raw data)
         if let Some(ref times) = report.job_times {
-            if times.p50 > 0 { self.job_times_p50.push(times.p50); }
-            if times.p95 > 0 { self.job_times_p95.push(times.p95); }
-            if times.p100 > 0 { self.job_times_p100.push(times.p100); }
+            if times.p50 > 0 {
+                self.job_times_p50.push(times.p50);
+            }
+            if times.p95 > 0 {
+                self.job_times_p95.push(times.p95);
+            }
+            if times.p100 > 0 {
+                self.job_times_p100.push(times.p100);
+            }
         }
 
         // Encode times (filter out zeros)
         if let Some(ref times) = report.encode_times {
-            if times.p50 > 0 { self.encode_times_p50.push(times.p50); }
-            if times.p95 > 0 { self.encode_times_p95.push(times.p95); }
+            if times.p50 > 0 {
+                self.encode_times_p50.push(times.p50);
+            }
+            if times.p95 > 0 {
+                self.encode_times_p95.push(times.p95);
+            }
         }
 
         // Decode times (filter out zeros)
         if let Some(ref times) = report.decode_times {
-            if times.p50 > 0 { self.decode_times_p50.push(times.p50); }
-            if times.p95 > 0 { self.decode_times_p95.push(times.p95); }
+            if times.p50 > 0 {
+                self.decode_times_p50.push(times.p50);
+            }
+            if times.p95 > 0 {
+                self.decode_times_p95.push(times.p95);
+            }
         }
 
         // Blob read times (filter out zeros)
         if let Some(ref times) = report.blob_read_times {
-            if times.p50 > 0 { self.blob_read_times_p50.push(times.p50); }
-            if times.p95 > 0 { self.blob_read_times_p95.push(times.p95); }
+            if times.p50 > 0 {
+                self.blob_read_times_p50.push(times.p50);
+            }
+            if times.p95 > 0 {
+                self.blob_read_times_p95.push(times.p95);
+            }
         }
 
         // Pixel throughput
@@ -830,13 +879,27 @@ impl PerformanceTracker {
     /// Calculate summary statistics
     pub fn summarize(&self) -> PerformanceSummary {
         PerformanceSummary {
-            jobs_per_second_max: self.jobs_per_second_peaks.iter().max().copied().unwrap_or(0),
+            jobs_per_second_max: self
+                .jobs_per_second_peaks
+                .iter()
+                .max()
+                .copied()
+                .unwrap_or(0),
             jobs_per_second_avg: if self.jobs_per_second_peaks.is_empty() {
                 0.0
             } else {
-                self.jobs_per_second_peaks.iter().map(|&x| x as f64).sum::<f64>() / self.jobs_per_second_peaks.len() as f64
+                self.jobs_per_second_peaks
+                    .iter()
+                    .map(|&x| x as f64)
+                    .sum::<f64>()
+                    / self.jobs_per_second_peaks.len() as f64
             },
-            jobs_per_minute_max: self.jobs_per_minute_peaks.iter().max().copied().unwrap_or(0),
+            jobs_per_minute_max: self
+                .jobs_per_minute_peaks
+                .iter()
+                .max()
+                .copied()
+                .unwrap_or(0),
             jobs_per_hour_max: self.jobs_per_hour_peaks.iter().max().copied().unwrap_or(0),
 
             job_time_p50_median: Self::median(&self.job_times_p50),
@@ -942,20 +1005,35 @@ impl ErrorTracker {
 
         // Error types
         if pipeline.errors_image_missing > 0 {
-            *self.errors_by_type.entry("ImageMissing".to_string()).or_insert(0) += pipeline.errors_image_missing;
+            *self
+                .errors_by_type
+                .entry("ImageMissing".to_string())
+                .or_insert(0) += pipeline.errors_image_missing;
         }
         if pipeline.errors_image_corrupted > 0 {
-            *self.errors_by_type.entry("ImageCorrupted".to_string()).or_insert(0) += pipeline.errors_image_corrupted;
+            *self
+                .errors_by_type
+                .entry("ImageCorrupted".to_string())
+                .or_insert(0) += pipeline.errors_image_corrupted;
         }
         if pipeline.errors_image_processing > 0 {
-            *self.errors_by_type.entry("ImageProcessing".to_string()).or_insert(0) += pipeline.errors_image_processing;
+            *self
+                .errors_by_type
+                .entry("ImageProcessing".to_string())
+                .or_insert(0) += pipeline.errors_image_processing;
         }
         if pipeline.errors_size_limit > 0 {
-            *self.errors_by_type.entry("SizeLimit".to_string()).or_insert(0) += pipeline.errors_size_limit;
+            *self
+                .errors_by_type
+                .entry("SizeLimit".to_string())
+                .or_insert(0) += pipeline.errors_size_limit;
         }
 
         // Per-license error rate
-        let entry = self.license_error_rates.entry(license_id.to_string()).or_insert((0, 0, 0.0));
+        let entry = self
+            .license_error_rates
+            .entry(license_id.to_string())
+            .or_insert((0, 0, 0.0));
         entry.0 += pipeline.postauth_ok;
         entry.1 += pipeline.postauth_errors;
         if entry.0 + entry.1 > 0 {
@@ -964,39 +1042,50 @@ impl ErrorTracker {
 
         // Response formats
         if pipeline.module_response_ext_jpg > 0 {
-            *self.response_formats.entry("jpg".to_string()).or_insert(0) += pipeline.module_response_ext_jpg as i64;
+            *self.response_formats.entry("jpg".to_string()).or_insert(0) +=
+                pipeline.module_response_ext_jpg as i64;
         }
         if pipeline.module_response_ext_png > 0 {
-            *self.response_formats.entry("png".to_string()).or_insert(0) += pipeline.module_response_ext_png as i64;
+            *self.response_formats.entry("png".to_string()).or_insert(0) +=
+                pipeline.module_response_ext_png as i64;
         }
         if pipeline.module_response_ext_gif > 0 {
-            *self.response_formats.entry("gif".to_string()).or_insert(0) += pipeline.module_response_ext_gif as i64;
+            *self.response_formats.entry("gif".to_string()).or_insert(0) +=
+                pipeline.module_response_ext_gif as i64;
         }
         if pipeline.module_response_ext_webp > 0 {
-            *self.response_formats.entry("webp".to_string()).or_insert(0) += pipeline.module_response_ext_webp as i64;
+            *self.response_formats.entry("webp".to_string()).or_insert(0) +=
+                pipeline.module_response_ext_webp as i64;
         }
 
         // Source formats
         if pipeline.source_file_ext_jpg > 0 {
-            *self.source_formats.entry("jpg".to_string()).or_insert(0) += pipeline.source_file_ext_jpg as i64;
+            *self.source_formats.entry("jpg".to_string()).or_insert(0) +=
+                pipeline.source_file_ext_jpg as i64;
         }
         if pipeline.source_file_ext_png > 0 {
-            *self.source_formats.entry("png".to_string()).or_insert(0) += pipeline.source_file_ext_png as i64;
+            *self.source_formats.entry("png".to_string()).or_insert(0) +=
+                pipeline.source_file_ext_png as i64;
         }
         if pipeline.source_file_ext_gif > 0 {
-            *self.source_formats.entry("gif".to_string()).or_insert(0) += pipeline.source_file_ext_gif as i64;
+            *self.source_formats.entry("gif".to_string()).or_insert(0) +=
+                pipeline.source_file_ext_gif as i64;
         }
         if pipeline.source_file_ext_webp > 0 {
-            *self.source_formats.entry("webp".to_string()).or_insert(0) += pipeline.source_file_ext_webp as i64;
+            *self.source_formats.entry("webp".to_string()).or_insert(0) +=
+                pipeline.source_file_ext_webp as i64;
         }
         if pipeline.source_file_ext_tiff > 0 {
-            *self.source_formats.entry("tiff".to_string()).or_insert(0) += pipeline.source_file_ext_tiff as i64;
+            *self.source_formats.entry("tiff".to_string()).or_insert(0) +=
+                pipeline.source_file_ext_tiff as i64;
         }
         if pipeline.source_file_ext_tif > 0 {
-            *self.source_formats.entry("tif".to_string()).or_insert(0) += pipeline.source_file_ext_tif as i64;
+            *self.source_formats.entry("tif".to_string()).or_insert(0) +=
+                pipeline.source_file_ext_tif as i64;
         }
         if pipeline.source_file_ext_bmp > 0 {
-            *self.source_formats.entry("bmp".to_string()).or_insert(0) += pipeline.source_file_ext_bmp as i64;
+            *self.source_formats.entry("bmp".to_string()).or_insert(0) +=
+                pipeline.source_file_ext_bmp as i64;
         }
     }
 
@@ -1012,7 +1101,8 @@ impl ErrorTracker {
 
     /// Get licenses with highest error rates
     pub fn high_error_licenses(&self, threshold_percent: f64) -> Vec<(String, f64, i64, i64)> {
-        let mut high_error: Vec<_> = self.license_error_rates
+        let mut high_error: Vec<_> = self
+            .license_error_rates
             .iter()
             .filter(|(_, (ok, err, rate))| *rate > threshold_percent && (*ok + *err) > 100)
             .map(|(id, (ok, err, rate))| (id.clone(), *rate, *ok, *err))
@@ -1032,18 +1122,18 @@ pub struct ImageScalingTracker {
     // Source image dimension alignment counts
     // These track whether source image dimensions are divisible by 2, 4, 8, 16, 32
     // Useful for JPEG optimization (8x8 DCT blocks) and video codec alignment (16x16 macroblocks)
-    pub scale_2x: i64,      // width divisible by 2
-    pub scale_2x2: i64,     // width AND height both divisible by 2
-    pub scale_4x: i64,      // width divisible by 4
-    pub scale_4x4: i64,     // width AND height both divisible by 4
-    pub scale_8x: i64,      // width divisible by 8
-    pub scale_x8: i64,      // height divisible by 8
-    pub scale_8x8: i64,     // width AND height both divisible by 8 (JPEG-optimized)
-    pub scale_16x: i64,     // width divisible by 16
-    pub scale_x16: i64,     // height divisible by 16
-    pub scale_16x16: i64,   // width AND height both divisible by 16 (macroblock-aligned)
-    pub scale_32x: i64,     // width divisible by 32
-    pub scale_32x32: i64,   // width AND height both divisible by 32
+    pub scale_2x: i64,    // width divisible by 2
+    pub scale_2x2: i64,   // width AND height both divisible by 2
+    pub scale_4x: i64,    // width divisible by 4
+    pub scale_4x4: i64,   // width AND height both divisible by 4
+    pub scale_8x: i64,    // width divisible by 8
+    pub scale_x8: i64,    // height divisible by 8
+    pub scale_8x8: i64,   // width AND height both divisible by 8 (JPEG-optimized)
+    pub scale_16x: i64,   // width divisible by 16
+    pub scale_x16: i64,   // height divisible by 16
+    pub scale_16x16: i64, // width AND height both divisible by 16 (macroblock-aligned)
+    pub scale_32x: i64,   // width divisible by 32
+    pub scale_32x32: i64, // width AND height both divisible by 32
 
     /// Per-license scaling stats: license_id -> total scaling operations
     pub license_scaling: HashMap<String, i64>,
@@ -1086,16 +1176,27 @@ impl ImageScalingTracker {
             + pipeline.source_multiple_32x32 as i64;
 
         if license_total > 0 {
-            *self.license_scaling.entry(license_id.to_string()).or_insert(0) += license_total;
+            *self
+                .license_scaling
+                .entry(license_id.to_string())
+                .or_insert(0) += license_total;
         }
     }
 
     /// Get total scaling operations
     pub fn total_scaling_ops(&self) -> i64 {
-        self.scale_2x + self.scale_2x2 + self.scale_4x + self.scale_4x4
-            + self.scale_8x + self.scale_x8 + self.scale_8x8
-            + self.scale_16x + self.scale_x16 + self.scale_16x16
-            + self.scale_32x + self.scale_32x32
+        self.scale_2x
+            + self.scale_2x2
+            + self.scale_4x
+            + self.scale_4x4
+            + self.scale_8x
+            + self.scale_x8
+            + self.scale_8x8
+            + self.scale_16x
+            + self.scale_x16
+            + self.scale_16x16
+            + self.scale_32x
+            + self.scale_32x32
     }
 
     /// Get dimension alignment distribution as percentages
@@ -1106,11 +1207,31 @@ impl ImageScalingTracker {
         }
 
         let mut dist = vec![
-            ("width%8 (one dim)", self.scale_8x, self.scale_8x as f64 / total * 100.0),
-            ("height%8 (one dim)", self.scale_x8, self.scale_x8 as f64 / total * 100.0),
-            ("8x8 aligned (JPEG)", self.scale_8x8, self.scale_8x8 as f64 / total * 100.0),
-            ("4x4 aligned", self.scale_4x4, self.scale_4x4 as f64 / total * 100.0),
-            ("16x16 aligned (MB)", self.scale_16x16, self.scale_16x16 as f64 / total * 100.0),
+            (
+                "width%8 (one dim)",
+                self.scale_8x,
+                self.scale_8x as f64 / total * 100.0,
+            ),
+            (
+                "height%8 (one dim)",
+                self.scale_x8,
+                self.scale_x8 as f64 / total * 100.0,
+            ),
+            (
+                "8x8 aligned (JPEG)",
+                self.scale_8x8,
+                self.scale_8x8 as f64 / total * 100.0,
+            ),
+            (
+                "4x4 aligned",
+                self.scale_4x4,
+                self.scale_4x4 as f64 / total * 100.0,
+            ),
+            (
+                "16x16 aligned (MB)",
+                self.scale_16x16,
+                self.scale_16x16 as f64 / total * 100.0,
+            ),
         ];
 
         // Filter out zero entries and sort by count
