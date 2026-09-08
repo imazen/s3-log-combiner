@@ -190,13 +190,13 @@ pub struct QueryParseArgs {
                                    //& proc_working_set_mb
                                    //&proc_info_version=4.2.8
                                    //&h_logical_cores=2
-                                   //&h_mac_digest=RZT9gciMsRVjZnoADuJTcA
+                                   //&h_mac_digest=AAAAAAAAAAAAAAAAAAAAAA
                                    //&p=&p=
-                                   //40b77a18bbb673482588cba24c8b41dab0667c38cbb9f934403639af5d324c02 licenses.imazen.net [25/Dec/2023:23:47:48 +0000] 54.208.251.139 - VHN3S4DWQPAXYFGH REST.GET.OBJECT v1/licenses/latest/04d04ad5881bcf7ac42f35ad3b27377778addc7bc77f111972b25d28282f5d3b.txt "GET /licenses.imazen.net/v1/licenses/latest/04d04ad5881bcf7ac42f35ad3b27377778addc7bc77f111972b25d28282f5d3b.txt?license_id=1032462609&manager_id=2e71cac1-afa3-4f0c-b304-a89ffe64bae0&first_heartbeat=1703548057&new_heartbeats=2&total_heartbeats=2&reporting_version=4&proc_64=1&proc_guid=i-x39UaTmkmOGLK5BCTWHw&proc_sys_dotnet=4.7%20or%20later&proc_iis=8.5&proc_integrated_pipeline=1&proc_id_hash=0V7_gghM&proc_asyncmodule=0&proc_working_set_mb=368&proc_git_commit=ee9c96cb&proc_info_version=4.2.8&proc_file_version=4.2.8.1168&proc_apppath_hash=GNaz8VUj&h_logical_cores=2
-                                   // &h_mac_digest=RZT9gciMsRVjZnoADuJTcA&h_os64=1&h_network_drives_count=0&h_other_drives_count=0&h_fixed_drives_count=2
-                                   // &h_fixed_drive=NTFS%2C111%2C268&h_fixed_drive=NTFS*%2C168%2C274
+                                   //40b77a18 licenses.imazen.net [14/Feb/2024:22:38:49 +0000] 111.11.111.11 - S12ASFAFE62BDGFQ REST.GET.OBJECT v1/licenses/latest/blabla.txt "GET /licenses.imazen.net/v1/licenses/latest/blabla.txt?license_id=00000&manager_id=aasacs&first_heartbeat=0&new_heartbeats=2&total_heartbeats=2&reporting_version=4&proc_64=1&proc_guid=i-00000000000000000&proc_sys_dotnet=4.7%20or%20later&proc_iis=8.5&proc_integrated_pipeline=1&proc_id_hash=00000000&proc_asyncmodule=0&proc_working_set_mb=0&proc_git_commit=00000000&proc_info_version=0.0.0&proc_file_version=0.0.0.0&proc_apppath_hash=00000000&h_logical_cores=2
+                                   // &h_mac_digest=AAAAAAAAAAAAAAAAAAAAAA&h_os64=1&h_network_drives_count=0&h_other_drives_count=0&h_fixed_drives_count=2
+                                   // &h_fixed_drive=NTFS%2C0%2C0&h_fixed_drive=NTFS*%2C0%2C0
                                    // &p=SizeLimiting&p=Ronaele.UI.Web.CustomS3Reader&p=DiskCache
-                                   // &provider_prefix=%2Fproduct-images%2F&provider_flags=1%2C0%2C0%2C0%2C1%2C1%2C1&diskcache_autoclean=0&diskcache_asyncwrites=0&diskcache_subfolders=8192&diskcache_network_drive=0&diskcache_filesystem=NTFS&diskcache_drive_avail=168231051264&diskcache_drive_total=274874757120
+                                   // &provider_prefix=%2Fproduct-images%2F&provider_flags=1%2C0%2C0%2C0%2C1%2C1%2C1&diskcache_autoclean=0&diskcache_asyncwrites=0&diskcache_subfolders=8192&diskcache_network_drive=0&diskcache_filesystem=NTFS&diskcache_drive_avail=0&diskcache_drive_total=0
                                    // &diskcache_virtualpath=%2Fimagecache
                                    //&counter_update_failed=0&jobs_completed_total=0
                                    //&jobs_completed_per_second_max=0&jobs_completed_per_minute_max=0
