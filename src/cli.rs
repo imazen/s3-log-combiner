@@ -15,6 +15,12 @@ pub enum Commands {
     Combine(FetchArgs),
     #[command(arg_required_else_help = true)]
     Summarize(QueryParseArgs),
+    /// Compresses local plaintext log files to .zst, applying the same
+    /// column filter used by `Combine`. Verifies each output by
+    /// round-trip-decoding and comparing line counts before (optionally)
+    /// deleting the original.
+    #[command(arg_required_else_help = true)]
+    Recompress(RecompressArgs),
 }
 
 /// Concatenates consecutive S3 (typically log) files with high concurrency and resiliency.
@@ -179,6 +185,11 @@ pub struct QueryParseArgs {
     #[arg(long, value_parser, default_value = "manager_id")]
     pub keep_unique_of_key: String,
 
+    /// How many days back to include log lines. Older lines are skipped.
+    /// Raise this for usage/retention analysis; the default keeps runs fast.
+    #[arg(long, default_value_t = 7, value_parser)]
+    pub days: i64,
+
     #[arg(long, default_value = "REST.GET.OBJECT", value_parser)]
     pub filter_operation_type: String,
 
@@ -236,6 +247,48 @@ pub struct QueryParseArgs {
                                    // &extra_job_query_keys= HTTP/1.1" 200 - 716 716 17 16 "-" "-" -
                                    // kjglkhvlkgY= - ECDHE-RSA-AES128-SHA - s3-us-west-2.amazonaws.com TLSv1.2 - Yes
                                    //
+}
+
+/// Recompresses local plaintext log files (output of older Combine runs, or raw S3 logs)
+/// into .zst form using the same column-stripping filter.
+#[derive(Debug, Clone, Args)]
+pub struct RecompressArgs {
+    /// Files or directories to process. Directories are scanned top-level only
+    /// unless --recursive is passed.
+    #[arg(value_parser, required = true)]
+    pub inputs: Vec<PathBuf>,
+
+    /// Recurse into subdirectories.
+    #[arg(long, action)]
+    pub recursive: bool,
+
+    /// Columns to retain (others replaced with '-'). Matches the Combine default.
+    #[arg(long, default_values_t = vec![1,2,3,6,7,8,9,10], value_parser)]
+    pub keep_columns: Vec<u32>,
+
+    /// Zstd compression level (1..=22).
+    #[arg(long, default_value_t = 19, value_parser)]
+    pub level: i32,
+
+    /// Enable zstd long-distance matching (window 128 MiB). Default on.
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    pub long: bool,
+
+    /// After verifying each .zst output, delete the original plaintext file.
+    #[arg(long, action)]
+    pub delete_original: bool,
+
+    /// Don't write anything; just print what would be done.
+    #[arg(long, action)]
+    pub dry_run: bool,
+
+    /// Print per-file detail for skipped files.
+    #[arg(long, short, action)]
+    pub verbose: bool,
+
+    /// Number of files to compress in parallel. Defaults to (CPU count - 1, min 1).
+    #[arg(long, value_parser)]
+    pub jobs: Option<usize>,
 }
 
 #[test]

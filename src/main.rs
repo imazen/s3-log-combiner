@@ -9,6 +9,7 @@ mod license_blob;
 mod log_syntax;
 mod process;
 mod progress;
+mod recompress;
 mod resume;
 mod summarize;
 mod telemetry;
@@ -25,6 +26,15 @@ async fn main() {
             let result = summarize::parse(parse).await;
             if result.is_err() {
                 eprintln!("Error: {}", result.unwrap_err());
+                std::process::exit(1);
+            }
+        }
+        Commands::Recompress(args) => {
+            let result = tokio::task::spawn_blocking(move || recompress::run(args))
+                .await
+                .expect("recompress task panicked");
+            if let Err(e) = result {
+                eprintln!("Error: {}", e);
                 std::process::exit(1);
             }
         }
