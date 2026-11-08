@@ -34,6 +34,25 @@ pub struct LicenseReport {
     pub license_id: String,
     pub license_status: String,
     pub owner: Option<String>,
+    /// Chargebee-style plan name, e.g. "Enterprise-wide ImageResizer Performance (Monthly)".
+    /// This is the primary join key against billing data, alongside `owner`.
+    pub product: Option<String>,
+    /// License kind, e.g. "site-wide", "v4-domain".
+    pub kind: Option<String>,
+    pub issued: Option<String>,
+    pub expires: Option<String>,
+    pub imageflow_expires: Option<String>,
+    pub subscription_expiration_date: Option<String>,
+    /// Revocation/non-payment message from the license blob, when present.
+    pub status_message: Option<String>,
+    /// Contractual limits, e.g. "Only valid for organizations with less than 30
+    /// employees." Cross-check against the customer's reported headcount.
+    pub restrictions: Option<String>,
+    pub total_cores: Option<String>,
+    pub max_servers: Option<String>,
+    pub is_public: Option<String>,
+    /// Domains named in the license blob itself (domain-locked licenses).
+    pub licensed_domains: Option<String>,
     pub features: Vec<String>,
     pub total_jobs: u64,
     pub unique_machines: usize,

@@ -522,7 +522,12 @@ fn process_lines(
     // Phase 2: summarization
     // For each sink, call summarize() and put it in the summary file as specified by the path
 
-    let data_cutoff = Utc::now() - chrono::Duration::days(7);
+    let data_cutoff = Utc::now() - chrono::Duration::days(config.days);
+    println!(
+        "Including log lines newer than {} ({} days)",
+        data_cutoff.format("%Y-%m-%d %H:%M:%S UTC"),
+        config.days
+    );
 
     let mut licenses_requested = HashSet::new();
 
@@ -864,6 +869,23 @@ fn generate_json_report(
         let owner = license_blob
             .as_ref()
             .and_then(|b| b.get_str("Owner").map(|s| s.to_string()));
+        let blob_field = |field: &str| {
+            license_blob
+                .as_ref()
+                .and_then(|b| b.get_str(field).map(|s| s.to_string()))
+        };
+        let product = blob_field("Product");
+        let kind = blob_field("Kind");
+        let issued = blob_field("Issued");
+        let expires = blob_field("Expires");
+        let imageflow_expires = blob_field("ImageflowExpires");
+        let subscription_expiration_date = blob_field("SubscriptionExpirationDate");
+        let status_message = blob_field("Message");
+        let restrictions = blob_field("Restrictions");
+        let total_cores = blob_field("TotalCores");
+        let max_servers = blob_field("MaxServers");
+        let is_public = blob_field("IsPublic");
+        let licensed_domains = blob_field("Domains");
         let features = license_blob
             .as_ref()
             .map(|b| b.get_features())
@@ -940,6 +962,18 @@ fn generate_json_report(
             license_id: license_id.clone(),
             license_status: status,
             owner,
+            product,
+            kind,
+            issued,
+            expires,
+            imageflow_expires,
+            subscription_expiration_date,
+            status_message,
+            restrictions,
+            total_cores,
+            max_servers,
+            is_public,
+            licensed_domains,
             features,
             total_jobs: enhanced.base.jobs_completed_total,
             unique_machines: enhanced.imageflow_machines.len()
