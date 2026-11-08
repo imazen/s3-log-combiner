@@ -1254,7 +1254,7 @@ fn generate_compatibility_report(version_tracker: &VersionTracker) -> String {
         sorted.sort_by(|a, b| b.1.license_ids.len().cmp(&a.1.license_ids.len()));
 
         for (name, feat) in sorted {
-            let display_name = if name.len() > 48 { &name[..48] } else { name };
+            let display_name: String = name.chars().take(48).collect();
             let low_usage = if feat.license_ids.len() <= 3 && !feat.license_names.is_empty() {
                 format!(" [{}]", feat.license_names.join(", "))
             } else {
