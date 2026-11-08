@@ -8,3 +8,11 @@ imazen.ps1
 /imazen-licenses-logs
 /logs.licenses.imazen.net
 .workongoing
+# Customer/billing data and generated reports -- contain PII, never commit
+/chargebee*
+/customer_report*
+/parsed_*
+*.zst
+*.log
+/nul
+__pycache__/
